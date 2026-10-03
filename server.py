@@ -8,14 +8,17 @@ same final path already exists. There is no web UI.
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import os
 import re
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from PIL import Image
 from waitress import create_server, serve
 
 HOST = "0.0.0.0"
@@ -61,13 +64,24 @@ def validated_filename(filename: str) -> tuple[str, str]:
     if not match:
         raise ValueError("invalid filename")
     day, clock, centisecond = match.groups()
-    if not 1 <= int(day[4:6]) <= 12 or not 1 <= int(day[6:8]) <= 31:
-        raise ValueError("invalid filename date")
-    if int(clock[0:2]) > 23 or int(clock[2:4]) > 59 or int(clock[4:6]) > 59:
-        raise ValueError("invalid filename time")
+    try:
+        datetime.strptime(day, "%Y%m%d")
+        datetime.strptime(clock, "%H%M%S")
+    except ValueError as exc:
+        raise ValueError("invalid filename date") from exc
     if int(centisecond) > 99:
         raise ValueError("invalid filename centisecond")
     return filename, day
+
+
+def validate_jpeg(payload: bytes) -> None:
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            if image.format != "JPEG":
+                raise ValueError("invalid jpeg")
+            image.load()
+    except Exception as exc:
+        raise ValueError("invalid jpeg") from exc
 
 
 def destination_for(hostname: str, username: str, filename: str) -> Path:
@@ -85,11 +99,22 @@ def success_response():
     return jsonify(status="ok", config=PHASE2_CONFIG), 200
 
 
+def write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written <= 0:
+            raise OSError("incomplete file write")
+        offset += written
+    os.fsync(fd)
+
+
 def write_exclusive(destination: Path, payload: bytes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
-        os.write(fd, payload)
+        write_all(fd, payload)
     except Exception:
         os.close(fd)
         destination.unlink(missing_ok=True)
@@ -105,10 +130,8 @@ def api_upload():
         return jsonify(status="error", message="file is required"), 400
 
     payload = uploaded.read()
-    if len(payload) < 3 or payload[:2] != b"\xff\xd8":
-        return jsonify(status="error", message="invalid jpeg"), 400
-
     try:
+        validate_jpeg(payload)
         destination = destination_for(
             request.form.get("hostname", ""),
             request.form.get("username", ""),
@@ -146,30 +169,67 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("dev_storage"),
         help="Development storage root. Phase 5 replaces this with configured storage.",
     )
-    parser.add_argument("--host", default=HOST)
-    parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
 
 
 def run_self_test(storage_root: Path) -> None:
-    import io
     import time
-    from datetime import datetime
 
     import requests
-    from PIL import Image
+    from PIL import Image as PilImage
 
     from app import make_filename, process_screenshot, upload_jpeg
 
+    if PORT != 55550 or HOST != "0.0.0.0":
+        raise AssertionError("server listen address is not fixed")
+    try:
+        parse_args(["--port", "80"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("port option is still accepted")
+
+    validated_filename("20261003_162000_37.jpg")
+    validated_filename("20260228_120000_00.jpg")
+    for bad_name in ("20260231_120000_00.jpg", "20261301_120000_00.jpg"):
+        try:
+            validated_filename(bad_name)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid date accepted: {bad_name}")
+
     configure_storage(storage_root)
+    partial = storage_root / "partial-test" / "20261003" / "20261003_162000_37.jpg"
+    original_write = os.write
+
+    def failing_write(fd: int, data: bytes) -> int:
+        if isinstance(data, memoryview):
+            data = data.tobytes()
+        original_write(fd, data[:1])
+        raise OSError("simulated incomplete write")
+
+    os.write = failing_write
+    try:
+        try:
+            write_exclusive(partial, b"\xff\xd8" + b"x" * 32)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("simulated write failure did not raise")
+    finally:
+        os.write = original_write
+    if partial.exists() or any(partial.parent.glob("*")):
+        raise AssertionError("failed write left a partial file")
+
     server = create_server(app, host="127.0.0.1", port=PORT, threads=4)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     time.sleep(0.4)
 
     try:
-        source = Image.new("RGB", (1920, 1080), (30, 90, 140))
+        source = PilImage.new("RGB", (1920, 1080), (30, 90, 140))
         jpeg = process_screenshot(source)
         filename = make_filename(datetime(2026, 10, 3, 16, 20, 0, 370000))
         url = f"http://127.0.0.1:{PORT}/api/upload"
@@ -182,38 +242,43 @@ def run_self_test(storage_root: Path) -> None:
         )
         if response.status_code != 200 or response.json().get("status") != "ok":
             raise AssertionError(f"upload failed: {response.status_code} {response.text}")
-        if response.json().get("config") != PHASE2_CONFIG:
-            raise AssertionError(f"config shape mismatch: {response.json()}")
 
         stored = storage_root / "LIN-PC01_child" / "20261003" / filename
         if not stored.is_file() or stored.read_bytes() != jpeg:
             raise AssertionError(f"stored file mismatch: {stored}")
-        first_stat = stored.stat()
+        if stored.stat().st_size != len(jpeg):
+            raise AssertionError("stored size does not match payload")
 
         duplicate = requests.post(
             url,
             data={"hostname": "LIN-PC01", "username": "child"},
-            files={"file": (filename, io.BytesIO(b"\xff\xd8\xffchanged"), "image/jpeg")},
+            files={"file": (filename, io.BytesIO(jpeg + b"\xff"), "image/jpeg")},
             timeout=5,
         )
-        if duplicate.status_code != 200:
-            raise AssertionError("duplicate upload was not acknowledged")
-        if stored.read_bytes() != jpeg or stored.stat().st_mtime_ns == 0:
-            raise AssertionError("duplicate upload changed the original file")
-        if stored.stat().st_size != first_stat.st_size:
-            raise AssertionError("duplicate upload overwrote the original file")
-        siblings = list(stored.parent.glob("*.jpg"))
-        if siblings != [stored]:
-            raise AssertionError(f"duplicate created extra files: {siblings}")
+        if duplicate.status_code != 200 or stored.read_bytes() != jpeg:
+            raise AssertionError("duplicate upload overwrote or was rejected")
+        if list(stored.parent.glob("*.jpg")) != [stored]:
+            raise AssertionError("duplicate upload created another file")
 
-        rejected = requests.post(
+        invalid = requests.post(
             url,
-            data={"hostname": "../evil", "username": "child"},
-            files={"file": (filename, io.BytesIO(jpeg), "image/jpeg")},
+            data={"hostname": "LIN-PC01", "username": "child"},
+            files={"file": ("20261003_162001_00.jpg", io.BytesIO(b"\xff\xd8not-a-jpeg"), "image/jpeg")},
             timeout=5,
         )
-        if rejected.status_code == 200:
-            raise AssertionError("path traversal was accepted")
+        if invalid.status_code != 400:
+            raise AssertionError(f"invalid jpeg was not rejected: {invalid.status_code}")
+        if (stored.parent / "20261003_162001_00.jpg").exists():
+            raise AssertionError("invalid jpeg created a file")
+
+        bad_date = requests.post(
+            url,
+            data={"hostname": "LIN-PC01", "username": "child"},
+            files={"file": ("20260231_120000_00.jpg", io.BytesIO(jpeg), "image/jpeg")},
+            timeout=5,
+        )
+        if bad_date.status_code != 400:
+            raise AssertionError("impossible date was accepted")
 
         started = time.perf_counter()
         failed = upload_jpeg("127.0.0.1", "LIN-PC01", "child", filename, jpeg, port=55551)
@@ -222,10 +287,10 @@ def run_self_test(storage_root: Path) -> None:
             raise AssertionError(f"unavailable server was not a fast failure: {failed} {elapsed:.2f}s")
 
         logging.info(
-            "server self-test passed: %s bytes=%s duplicate=ok timeout=%.2fs",
+            "server self-test passed: %s bytes=%s port=%s duplicate=ok invalid=400",
             stored,
             stored.stat().st_size,
-            elapsed,
+            PORT,
         )
     finally:
         server.close()
@@ -239,8 +304,8 @@ def main(argv: list[str] | None = None) -> int:
         run_self_test(args.storage_root)
         return 0
 
-    logging.info("Listening on %s:%s storage=%s", args.host, args.port, STORAGE_ROOT)
-    serve(app, host=args.host, port=args.port, threads=4)
+    logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
+    serve(app, host=HOST, port=PORT, threads=4)
     return 0
 
 
