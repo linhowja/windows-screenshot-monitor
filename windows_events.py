@@ -29,15 +29,71 @@ PBT_APMRESUMEAUTOMATIC = 0x0012
 
 WTS_CURRENT_SERVER_HANDLE = 0
 WTS_CURRENT_SESSION = 0xFFFFFFFF
-WTS_CONNECT_STATE = 8
 WTS_SESSION_INFO_EX = 25
-WTS_ACTIVE = 0
 WTS_SESSIONSTATE_LOCK = 0
 WTS_SESSIONSTATE_UNLOCK = 1
+WTS_ACTIVE = 0
+
+WINDOWS_MANUAL_TESTS = """
+Windows 10/11 64-bit manual tests. Run server.py first, then:
+    python app.py --server-ip 127.0.0.1
+
+A. Normal capture
+   Login to the desktop.
+   Expected: capture enabled, one JPEG about every 20 seconds, upload or cache.
+   Not expected: screenshots before the desktop is ready.
+
+B. Win+L
+   Lock the session and wait 1-2 minutes.
+   Expected: capture disabled, no new screenshot and no new cache file.
+   Not expected: a screenshot of the lock screen.
+
+C. Unlock
+   Unlock back to the desktop.
+   Expected: no immediate screenshot; recovery worker awakened immediately;
+   next screenshot only after one full interval.
+   Not expected: a second recovery worker.
+
+D. Sleep
+   Put Windows to sleep.
+   Expected: capture disabled before suspend; no screenshot is taken for sleep.
+   Not expected: catch-up screenshots for the sleep duration.
+
+E. Wake while locked
+   Wake the computer while the lock screen is still showing.
+   Expected: system awake, capture still disabled, no screenshot.
+   Not expected: capture before unlock and desktop ready.
+
+F. Unlock after wake
+   Unlock after E.
+   Expected: recovery triggered once; screenshot resumes after a full interval.
+   Not expected: an immediate screenshot at the unlock instant.
+
+G. Logoff
+   Log off the interactive user.
+   Expected: capture disabled; no further capture attempts.
+   Not expected: mss errors becoming a crash.
+
+H. Login again
+   Log in to the desktop again and start the client if the process exited.
+   Expected: startup query sees an active session, then normal capture resumes.
+   Not expected: capture while the login screen is still showing.
+
+I. Repeated Lock/Unlock
+   Lock and unlock several times.
+   Expected: one recovery worker, one capture loop, no deadlock or crash.
+   Not expected: duplicate workers or overlapping timers.
+
+J. Server unavailable plus Lock/Unlock
+   Stop the server, lock, then unlock.
+   Expected: recovery trigger runs, upload fails, cache files remain, client continues.
+   Not expected: cache deletion or a client crash.
+"""
 
 recovery_trigger = threading.Event()
 _listener_started = False
 _listener_lock = threading.Lock()
+_callback_keepalive = None
 
 
 class ClientState:
@@ -163,6 +219,10 @@ class ClientState:
             self.system_awake = system_awake
             self._publish(was_enabled)
 
+    def disable_capture(self, reason: str) -> None:
+        logging.error("Capture disabled: %s", reason)
+        self.set_initial(False, False, False, False)
+
 
 client_state = ClientState(enabled=not sys.platform.startswith("win"))
 
@@ -172,48 +232,152 @@ def request_recovery(reason: str) -> None:
     recovery_trigger.set()
 
 
+def _windows_modules():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+
+    kernel32.GetCurrentProcessId.argtypes = []
+    kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+    kernel32.GetLastError.argtypes = []
+    kernel32.GetLastError.restype = wintypes.DWORD
+
+    wtsapi32.WTSQuerySessionInformationW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    wtsapi32.WTSFreeMemory.argtypes = [wintypes.LPVOID]
+    wtsapi32.WTSFreeMemory.restype = None
+    wtsapi32.WTSRegisterSessionNotification.argtypes = [wintypes.HWND, wintypes.DWORD]
+    wtsapi32.WTSRegisterSessionNotification.restype = wintypes.BOOL
+    wtsapi32.WTSUnRegisterSessionNotification.argtypes = [wintypes.HWND]
+    wtsapi32.WTSUnRegisterSessionNotification.restype = wintypes.BOOL
+
+    user32.RegisterClassW.argtypes = [ctypes.c_void_p]
+    user32.RegisterClassW.restype = wintypes.ATOM
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HWND,
+        wintypes.HMENU,
+        wintypes.HINSTANCE,
+        wintypes.LPVOID,
+    ]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = ctypes.c_ssize_t
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.TranslateMessage.restype = wintypes.BOOL
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    user32.RegisterSuspendResumeNotification.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    user32.RegisterSuspendResumeNotification.restype = wintypes.HANDLE
+    user32.UnregisterSuspendResumeNotification.argtypes = [wintypes.HANDLE]
+    user32.UnregisterSuspendResumeNotification.restype = wintypes.BOOL
+    return ctypes, wintypes, kernel32, user32, wtsapi32
+
+
 def current_session_id() -> int | None:
     if not sys.platform.startswith("win"):
         return None
-    import ctypes
-
-    session_id = ctypes.c_uint()
-    if not ctypes.windll.kernel32.ProcessIdToSessionId(
-        ctypes.windll.kernel32.GetCurrentProcessId(),
-        ctypes.byref(session_id),
-    ):
+    _ctypes, wintypes, kernel32, _user32, _wts = _windows_modules()
+    session_id = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), _ctypes.byref(session_id)):
+        logging.error("ProcessIdToSessionId failed: %s", kernel32.GetLastError())
         return None
     return int(session_id.value)
+
+
+def read_session_info():
+    """Return logged_on, unlocked, session_state, session_flags from WTSINFOEX."""
+    ctypes, wintypes, _kernel32, _user32, wts = _windows_modules()
+
+    class WTSINFOEX_LEVEL1_W(ctypes.Structure):
+        _fields_ = [
+            ("SessionId", wintypes.DWORD),
+            ("SessionState", wintypes.DWORD),
+            ("SessionFlags", wintypes.LONG),
+            ("WinStationName", wintypes.WCHAR * 33),
+            ("UserName", wintypes.WCHAR * 21),
+            ("DomainName", wintypes.WCHAR * 18),
+            ("LogonTime", wintypes.LARGE_INTEGER),
+            ("ConnectTime", wintypes.LARGE_INTEGER),
+            ("DisconnectTime", wintypes.LARGE_INTEGER),
+            ("LastInputTime", wintypes.LARGE_INTEGER),
+            ("CurrentTime", wintypes.LARGE_INTEGER),
+            ("IncomingBytes", wintypes.DWORD),
+            ("OutgoingBytes", wintypes.DWORD),
+            ("IncomingFrames", wintypes.DWORD),
+            ("OutgoingFrames", wintypes.DWORD),
+            ("IncomingCompressedBytes", wintypes.DWORD),
+            ("OutgoingCompressedBytes", wintypes.DWORD),
+        ]
+
+    class WTSINFOEXW(ctypes.Structure):
+        _fields_ = [
+            ("Level", wintypes.DWORD),
+            ("DataSize", wintypes.DWORD),
+            ("Data", WTSINFOEX_LEVEL1_W),
+        ]
+
+    buffer = ctypes.c_void_p()
+    returned = wintypes.DWORD()
+    ok = wts.WTSQuerySessionInformationW(
+        WTS_CURRENT_SERVER_HANDLE,
+        WTS_CURRENT_SESSION,
+        WTS_SESSION_INFO_EX,
+        ctypes.byref(buffer),
+        ctypes.byref(returned),
+    )
+    if not ok or not buffer:
+        raise OSError(ctypes.get_last_error())
+    try:
+        info = ctypes.cast(buffer, ctypes.POINTER(WTSINFOEXW)).contents
+        level1 = info.Data
+        needed = WTSINFOEXW.Data.offset + WTSINFOEX_LEVEL1_W.UserName.offset
+        if returned.value < needed:
+            raise OSError("WTSINFOEX buffer is smaller than the session fields")
+        unlocked = int(level1.SessionFlags) == WTS_SESSIONSTATE_UNLOCK
+        logged_on = bool(level1.UserName) and int(level1.SessionState) == WTS_ACTIVE
+        return logged_on, unlocked, int(level1.SessionState), int(level1.SessionFlags)
+    finally:
+        wts.WTSFreeMemory(buffer)
 
 
 def query_initial_state() -> None:
     if not sys.platform.startswith("win"):
         client_state.set_initial(True, True, True, True)
         return
-    import ctypes
-    from ctypes import wintypes
-
-    wts = ctypes.windll.wtsapi32
-    buffer = ctypes.c_void_p()
-    returned = wintypes.DWORD()
-    logged_on = False
-    unlocked = False
-    if wts.WTSQuerySessionInformationW(
-        WTS_CURRENT_SERVER_HANDLE,
-        WTS_CURRENT_SESSION,
-        WTS_SESSION_INFO_EX,
-        ctypes.byref(buffer),
-        ctypes.byref(returned),
-    ):
-        try:
-            raw = ctypes.string_at(buffer, returned.value)
-            if len(raw) >= 20:
-                session_flags = int.from_bytes(raw[16:20], "little", signed=True)
-                unlocked = session_flags == WTS_SESSIONSTATE_UNLOCK
-                logged_on = session_flags != WTS_SESSIONSTATE_LOCK
-        finally:
-            wts.WTSFreeMemory(buffer)
-    client_state.set_initial(logged_on, unlocked, unlocked, True)
+    try:
+        logged_on, unlocked, state, flags = read_session_info()
+    except OSError as exc:
+        logging.error("Initial session query failed: %s", exc)
+        client_state.disable_capture("initial session query failed")
+        return
+    desktop_ready = logged_on and unlocked
+    client_state.set_initial(logged_on, unlocked, desktop_ready, True)
+    logging.info("Initial session state=%s flags=%s", state, flags)
     if client_state.capture_enabled:
         logging.info("Startup state is active")
     else:
@@ -233,14 +397,13 @@ def start_windows_listener() -> None:
 
 
 def _message_loop() -> None:
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    wts = ctypes.windll.wtsapi32
+    global _callback_keepalive
+    try:
+        ctypes, wintypes, kernel32, user32, wts = _windows_modules()
+    except OSError as exc:
+        client_state.disable_capture(f"Windows API load failed: {exc}")
+        return
     own_session = current_session_id()
-
     wndproc_type = ctypes.WINFUNCTYPE(
         ctypes.c_ssize_t,
         wintypes.HWND,
@@ -259,7 +422,7 @@ def _message_loop() -> None:
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     callback = wndproc_type(wndproc)
-    class_name = "ScreenshotClientEvents"
+    _callback_keepalive = callback
 
     class WNDCLASSW(ctypes.Structure):
         _fields_ = [
@@ -279,36 +442,103 @@ def _message_loop() -> None:
     window_class = WNDCLASSW()
     window_class.lpfnWndProc = callback
     window_class.hInstance = instance
-    window_class.lpszClassName = class_name
+    window_class.lpszClassName = "ScreenshotClientEvents"
     if not user32.RegisterClassW(ctypes.byref(window_class)):
-        logging.error("Windows event window class registration failed")
+        client_state.disable_capture(f"RegisterClassW failed: {kernel32.GetLastError()}")
         return
     hwnd = user32.CreateWindowExW(
-        0,
-        class_name,
-        "ScreenshotClientEvents",
-        0,
-        0,
-        0,
-        0,
-        0,
-        HWND_MESSAGE,
-        None,
-        instance,
-        None,
+        0, "ScreenshotClientEvents", "ScreenshotClientEvents", 0,
+        0, 0, 0, 0, HWND_MESSAGE, None, instance, None,
     )
     if not hwnd:
-        logging.error("Windows event window creation failed")
+        client_state.disable_capture(f"CreateWindowExW failed: {kernel32.GetLastError()}")
         return
     if not wts.WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION):
-        logging.error("Session notification registration failed")
-    if not user32.RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE):
-        logging.error("Suspend/resume notification registration failed")
+        client_state.disable_capture(
+            f"WTSRegisterSessionNotification failed: {kernel32.GetLastError()}"
+        )
+        return
+    power_notify = user32.RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)
+    if not power_notify:
+        client_state.disable_capture(
+            f"RegisterSuspendResumeNotification failed: {kernel32.GetLastError()}"
+        )
+        wts.WTSUnRegisterSessionNotification(hwnd)
+        return
     message = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
         user32.TranslateMessage(ctypes.byref(message))
         user32.DispatchMessageW(ctypes.byref(message))
     wts.WTSUnRegisterSessionNotification(hwnd)
-    user32.UnregisterSuspendResumeNotification(hwnd)
-    # Keep the callback alive for the lifetime of this thread.
-    del callback
+    user32.UnregisterSuspendResumeNotification(power_notify)
+
+
+def run_windows_api_self_test() -> int:
+    print(WINDOWS_MANUAL_TESTS)
+    if not sys.platform.startswith("win"):
+        print("Windows API self-test requires Windows")
+        return 2
+    ctypes, wintypes, kernel32, user32, wts = _windows_modules()
+    session_id = current_session_id()
+    if session_id is None:
+        print("current session ID unavailable")
+        return 1
+    try:
+        logged_on, unlocked, state, flags = read_session_info()
+    except OSError as exc:
+        print(f"initial session state unavailable: {exc}")
+        return 1
+    wndproc_type = ctypes.WINFUNCTYPE(
+        ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    )
+    callback = wndproc_type(user32.DefWindowProcW)
+
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [
+            ("style", wintypes.UINT),
+            ("lpfnWndProc", wndproc_type),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", wintypes.HINSTANCE),
+            ("hIcon", wintypes.HICON),
+            ("hCursor", wintypes.HANDLE),
+            ("hbrBackground", wintypes.HBRUSH),
+            ("lpszMenuName", wintypes.LPCWSTR),
+            ("lpszClassName", wintypes.LPCWSTR),
+        ]
+
+    instance = kernel32.GetModuleHandleW(None)
+    window_class = WNDCLASSW()
+    window_class.lpfnWndProc = callback
+    window_class.hInstance = instance
+    window_class.lpszClassName = "ScreenshotClientApiSelfTest"
+    if not user32.RegisterClassW(ctypes.byref(window_class)):
+        print(f"hidden window class failed: {kernel32.GetLastError()}")
+        return 1
+    hwnd = user32.CreateWindowExW(
+        0, "ScreenshotClientApiSelfTest", "ScreenshotClientApiSelfTest", 0,
+        0, 0, 0, 0, HWND_MESSAGE, None, instance, None,
+    )
+    if not hwnd:
+        print(f"hidden message window failed: {kernel32.GetLastError()}")
+        return 1
+    if not wts.WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION):
+        print(f"WTS registration failed: {kernel32.GetLastError()}")
+        user32.DestroyWindow(hwnd)
+        return 1
+    power_notify = user32.RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)
+    if not power_notify:
+        print(f"suspend/resume registration failed: {kernel32.GetLastError()}")
+        wts.WTSUnRegisterSessionNotification(hwnd)
+        user32.DestroyWindow(hwnd)
+        return 1
+    print(f"hidden message window: {hwnd}")
+    print("WTS registration: ok")
+    print("suspend/resume registration: ok")
+    print(f"current session ID: {session_id}")
+    print(f"initial session logged_on={logged_on} unlocked={unlocked} state={state} flags={flags}")
+    user32.UnregisterSuspendResumeNotification(power_notify)
+    wts.WTSUnRegisterSessionNotification(hwnd)
+    user32.DestroyWindow(hwnd)
+    print("Windows API self-test passed")
+    return 0
