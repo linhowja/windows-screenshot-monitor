@@ -225,12 +225,10 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
                 logging.error("Recovery upload failed: %s", path.name)
                 with cache_lock:
                     claimed_cache_files.discard(path)
-                break
         except Exception as exc:
             logging.error("Recovery upload failed: %s (%s)", path.name, exc)
             with cache_lock:
                 claimed_cache_files.discard(path)
-            break
     return uploaded
 
 
@@ -384,6 +382,23 @@ def run_cache_self_test(cache_root: Path) -> None:
         if [path.name for path in pending_cache_files()] != before:
             raise AssertionError("Test F removed cache while server was down")
 
+        attempted: list[str] = []
+
+        def partial_upload(*args, **kwargs):
+            filename = args[3]
+            attempted.append(filename)
+            return filename != names[1]
+
+        globals()["upload_jpeg"] = partial_upload
+        try:
+            recover_cache("127.0.0.1")
+        finally:
+            globals()["upload_jpeg"] = original_upload
+        if attempted != names:
+            raise AssertionError(f"single failure stopped recovery: {attempted}")
+        remaining_after_partial = [path.name for path in pending_cache_files()]
+        if remaining_after_partial != [names[1]]:
+            raise AssertionError(f"partial recovery mismatch: {remaining_after_partial}")
         for path in pending_cache_files():
             path.unlink()
         cache_jpeg(names[0], jpeg)
@@ -419,6 +434,41 @@ def run_cache_self_test(cache_root: Path) -> None:
         worker.join()
         if time.perf_counter() - started < 1:
             raise AssertionError("Test H recovery finished too quickly to prove overlap")
+
+        for path in list(pending_cache_files()):
+            path.unlink()
+        for index in range(40):
+            cache_jpeg(f"20261003_171000_{index:02d}.jpg", jpeg)
+        normal_name = "20261003_181500_00.jpg"
+        release_capture = threading.Event()
+        original_capture = capture_jpeg
+
+        def fast_capture(quality: int = DEFAULT_JPEG_QUALITY):
+            return normal_name, jpeg, DateTime.now()
+
+        def mixed_upload(*args, **kwargs):
+            filename = args[3]
+            if filename != normal_name:
+                release_capture.set()
+                time.sleep(0.05)
+            return True
+
+        globals()["capture_jpeg"] = fast_capture
+        globals()["upload_jpeg"] = mixed_upload
+        recovery = threading.Thread(target=recover_cache, args=("127.0.0.1",))
+        recovery.start()
+        if not release_capture.wait(2):
+            raise AssertionError("concurrency recovery did not start")
+        capture_started = time.perf_counter()
+        handle_capture("127.0.0.1", DEFAULT_JPEG_QUALITY)
+        capture_elapsed = time.perf_counter() - capture_started
+        if capture_elapsed > 0.5:
+            raise AssertionError(f"handle_capture blocked by recovery: {capture_elapsed:.2f}s")
+        if not recovery.is_alive():
+            raise AssertionError("handle_capture did not overlap the recovery worker")
+        recovery.join()
+        globals()["capture_jpeg"] = original_capture
+        globals()["upload_jpeg"] = original_upload
 
         temporary = cache_root / "20261003" / "20261003_190000_00.jpg.tmp"
         temporary.write_bytes(b"partial")
