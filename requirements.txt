@@ -1,6 +1,6 @@
 mss
 requests
 pyinstaller
-pysocks
 flask
 python-dotenv
+Pillow

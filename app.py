@@ -1,318 +1,260 @@
+"""Phase 1 client capture pipeline.
+
+Formal runtime keeps each encoded JPEG in memory and then discards it.
+It does not upload, cache, or write a successful screenshot to disk.
+
+Acceptance output is opt-in only:
+
+    python app.py --test-output DIR
+    python app.py --self-test
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import logging
 import sys
 import time
-import json
-import logging
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from datetime import datetime
-import getpass
-from typing import List, Optional, Set
+from pathlib import Path
 
-import mss
-import requests
+from PIL import Image, ImageFile
 
-
-CONFIG_FILE = "config.json"
-
-DEFAULT_CONFIG = {
-    "interval_seconds": 10,
-    "screenshot_folder": "",
-    "server_url": "",
-    "upload_password": "",
-    "upload_batch_size": 10,
-    "max_folder_size_mb": 500,
-    "tor_socks_proxy": "socks5h://127.0.0.1:9050",
-    "log_file": "screen_guard.log"
-}
+# Phase 1 local defaults. Server-driven configuration is a later phase.
+DEFAULT_JPEG_QUALITY = 40
+DEFAULT_INTERVAL_SECONDS = 20
+FILENAME_RE = r"^\d{8}_\d{6}_\d{2}\.jpg$"
 
 
-def setup_logging(log_file: str) -> None:
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-
-    for h in list(logger.handlers):
-        logger.removeHandler(h)
-
-    log_path = Path(log_file)
-    try:
-        if log_path.exists():
-            log_path.unlink()
-    except Exception as e:
-        print(f"[WARN] Could not delete old log file {log_path}: {e}", file=sys.stderr)
-
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
     )
 
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
 
-    fh = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+def scaled_size(width: int, height: int) -> tuple[int, int]:
+    """Scale each axis to 25 percent. 1920x1080 becomes 480x270."""
+    return (max(1, round(width * 0.25)), max(1, round(height * 0.25)))
 
 
-def load_or_create_config() -> dict:
-    config_path = Path(CONFIG_FILE)
+def make_filename(captured_at: datetime) -> str:
+    """YYYYMMDD_HHMMSS_CC.jpg, where CC is the centisecond, not a sequence."""
+    centisecond = captured_at.microsecond // 10_000
+    return captured_at.strftime("%Y%m%d_%H%M%S_") + f"{centisecond:02d}.jpg"
 
-    if not config_path.exists():
-        default_folder = Path.home() / "Pictures" / "Security"
-        DEFAULT_CONFIG["screenshot_folder"] = str(default_folder)
 
-        with config_path.open("w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=4)
+def process_screenshot(image: Image.Image, quality: int = DEFAULT_JPEG_QUALITY) -> bytes:
+    """Resize each axis to 25 percent, convert to 8-bit grayscale, encode JPEG."""
+    if not 20 <= quality <= 100:
+        raise ValueError(f"JPEG quality must be 20-100, got {quality}")
 
-        print(
-            f"[INFO] {CONFIG_FILE} has been created with default settings.\n"
-            f"Please open it, edit it, then run the program again."
+    resized = image.resize(scaled_size(image.width, image.height), Image.Resampling.LANCZOS)
+    grayscale = resized.convert("L")
+    buffer = io.BytesIO()
+    grayscale.save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
+
+
+def capture_primary_monitor() -> Image.Image:
+    """Grab only the primary monitor. mss index 0 is the virtual desktop."""
+    import mss
+
+    with mss.mss() as sct:
+        primary = getattr(sct, "primary_monitor", None)
+        if not primary:
+            if len(sct.monitors) < 2:
+                raise RuntimeError("mss did not report a primary monitor")
+            primary = sct.monitors[1]
+        shot = sct.grab(primary)
+        return Image.frombytes("RGB", shot.size, shot.rgb)
+
+
+def capture_jpeg(quality: int = DEFAULT_JPEG_QUALITY) -> tuple[str, bytes, datetime]:
+    captured_at = datetime.now()
+    filename = make_filename(captured_at)
+    jpeg = process_screenshot(capture_primary_monitor(), quality)
+    return filename, jpeg, captured_at
+
+
+def write_test_jpeg(output_dir: Path, quality: int) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filename, jpeg, _captured_at = capture_jpeg(quality)
+    destination = output_dir / filename
+    destination.write_bytes(jpeg)
+    return destination
+
+
+def run_forever(interval_seconds: int, quality: int) -> None:
+    logging.info(
+        "Phase 1 capture started. JPEGs stay in memory only. "
+        "interval=%ss quality=%s",
+        interval_seconds,
+        quality,
+    )
+    while True:
+        filename, jpeg, _captured_at = capture_jpeg(quality)
+        logging.info(
+            "Captured %s in memory (%d bytes, quality %d); discarded without saving",
+            filename,
+            len(jpeg),
+            quality,
         )
-        sys.exit(0)
-
-    with config_path.open("r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    for key, value in DEFAULT_CONFIG.items():
-        config.setdefault(key, value)
-
-    return config
+        del jpeg
+        time.sleep(interval_seconds)
 
 
-def ensure_folder(path_obj) -> Path:
-    folder = Path(path_obj)
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-
-def get_folder_size_mb(folder: Path) -> float:
-    total_bytes = 0
-    for item in folder.rglob("*"):
-        if item.is_file():
-            total_bytes += item.stat().st_size
-    return total_bytes / (1024 * 1024)
-
-
-def rotate_screenshots(folder: Path, max_size_mb: float, protected: Optional[Set[Path]] = None) -> None:
-    if max_size_mb <= 0:
-        return
-
-    current_size = get_folder_size_mb(folder)
-    if current_size <= max_size_mb:
-        return
-
-    if protected is None:
-        protected = set()
-
-    logging.info(
-        "Folder size %.2f MB exceeds limit %.2f MB. Starting rotation...",
-        current_size, max_size_mb
-    )
-
-    files = [f for f in folder.rglob("*") if f.is_file()]
-    files.sort(key=lambda f: f.stat().st_mtime)
-
-    for file_path in files:
-        if file_path in protected:
+def _jpeg_sof(data: bytes) -> tuple[int, int, int, int]:
+    """Return precision, height, width, component count from the first SOF marker."""
+    index = 2
+    while index + 8 < len(data):
+        if data[index] != 0xFF:
+            index += 1
             continue
-
-        try:
-            logging.info("Deleting old screenshot (rotation): %s", file_path)
-            file_path.unlink()
-        except Exception as e:
-            logging.error("Error deleting file %s: %s", file_path, e)
-
-        current_size = get_folder_size_mb(folder)
-        if current_size <= max_size_mb:
-            logging.info("Rotation complete. Current folder size: %.2f MB", current_size)
+        marker = data[index + 1]
+        if marker in (0xD8, 0xD9):
+            index += 2
+            continue
+        if index + 4 > len(data):
             break
+        length = int.from_bytes(data[index + 2:index + 4], "big")
+        if marker in (0xC0, 0xC1, 0xC2):
+            precision = data[index + 4]
+            height = int.from_bytes(data[index + 5:index + 7], "big")
+            width = int.from_bytes(data[index + 7:index + 9], "big")
+            components = data[index + 9]
+            return precision, height, width, components
+        index += 2 + length
+    raise AssertionError("JPEG SOF marker not found")
 
 
-def take_screenshot(output_path: Path) -> None:
-    try:
-        with mss.mss() as sct:
-            monitor = sct.monitors[1]
-            sct.grab(monitor)
-            sct.shot(mon=1, output=str(output_path))
-        logging.info("Screenshot saved: %s", output_path)
-    except Exception as e:
-        logging.error("Error taking screenshot: %s", e)
+def _quantization_tables(data: bytes) -> bytes:
+    tables = bytearray()
+    index = 2
+    while index + 4 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        length = int.from_bytes(data[index + 2:index + 4], "big")
+        if marker == 0xDB:
+            tables.extend(data[index + 2:index + 2 + length])
+        if marker == 0xDA:
+            break
+        index += 2 + length
+    return bytes(tables)
 
 
-def get_day_folder_name_for_path(path: Path) -> str:
-    name = path.stem  # screenshot_YYYYMMDD_HHMMSS
-    parts = name.split("_")
-    if len(parts) >= 2:
-        date_str = parts[1]
-        try:
-            dt = datetime.strptime(date_str, "%Y%m%d")
-            return dt.strftime("%d-%m-%Y")
-        except ValueError:
-            pass
+def run_self_test() -> None:
+    import re
 
-    dt = datetime.fromtimestamp(path.stat().st_mtime)
-    return dt.strftime("%d-%m-%Y")
+    source = Image.new("RGB", (1920, 1080), (20, 140, 220))
+    for x in range(0, 1920, 40):
+        for y in range(0, 1080, 40):
+            source.putpixel((x, y), (x % 256, y % 256, 80))
 
+    captured_at = datetime(2026, 10, 3, 16, 20, 0, 370000)
+    filename = make_filename(captured_at)
+    if filename != "20261003_162000_37.jpg":
+        raise AssertionError(f"centisecond filename mismatch: {filename}")
+    if make_filename(datetime(2026, 10, 3, 16, 20, 0, 999999)) != "20261003_162000_99.jpg":
+        raise AssertionError("centisecond upper bound is not 99")
+    if not re.fullmatch(FILENAME_RE, filename):
+        raise AssertionError(f"filename does not match YYYYMMDD_HHMMSS_CC.jpg: {filename}")
 
-def upload_batch_to_server(
-    server_url: str,
-    upload_password: str,
-    tor_proxy: Optional[str],
-    username: str,
-    pending_paths: List[Path]
-) -> List[Path]:
-    """
-    Upload a batch of screenshots to the onion server.
-    Returns list of Paths successfully uploaded (and deleted locally).
-    """
-    if not pending_paths or not server_url or not upload_password:
-        return []
+    if scaled_size(1920, 1080) != (480, 270):
+        raise AssertionError(f"unexpected scaled size: {scaled_size(1920, 1080)}")
 
-    successfully_uploaded: List[Path] = []
+    jpeg = process_screenshot(source, DEFAULT_JPEG_QUALITY)
+    if jpeg[:2] != b"\xff\xd8":
+        raise AssertionError("output is not a JPEG")
 
-    proxies = None
-    if tor_proxy:
-        proxies = {
-            "http": tor_proxy,
-            "https": tor_proxy,
-        }
+    parsed = Image.open(io.BytesIO(jpeg))
+    parsed.load()
+    if parsed.format != "JPEG":
+        raise AssertionError(f"format is {parsed.format}, expected JPEG")
+    if parsed.mode != "L":
+        raise AssertionError(f"mode is {parsed.mode}, expected 8-bit grayscale L")
+    if parsed.size != (480, 270):
+        raise AssertionError(f"size is {parsed.size}, expected 480x270")
 
-    upload_url = server_url.rstrip("/") + "/api/upload"
+    precision, height, width, components = _jpeg_sof(jpeg)
+    if (precision, height, width, components) != (8, 270, 480, 1):
+        raise AssertionError(
+            f"SOF mismatch: precision={precision} size={width}x{height} components={components}"
+        )
 
-    for path in pending_paths:
-        try:
-            if not path.exists():
-                logging.warning("File %s no longer exists locally, skipping.", path)
-                successfully_uploaded.append(path)
-                continue
+    reference = io.BytesIO()
+    Image.new("L", (8, 8), 128).save(reference, format="JPEG", quality=DEFAULT_JPEG_QUALITY)
+    other = io.BytesIO()
+    Image.new("L", (8, 8), 128).save(other, format="JPEG", quality=95)
+    if _quantization_tables(jpeg) != _quantization_tables(reference.getvalue()):
+        raise AssertionError("JPEG quantization tables do not match Pillow quality 40")
+    if _quantization_tables(jpeg) == _quantization_tables(other.getvalue()):
+        raise AssertionError("quality 40 tables unexpectedly match quality 95")
 
-            day_folder = get_day_folder_name_for_path(path)
-            logging.info("Uploading %s (day=%s) for user %s...", path, day_folder, username)
-
-            with path.open("rb") as f:
-                files = {
-                    "file": (path.name, f, "image/png"),
-                }
-                data = {
-                    "username": username,
-                    "day": day_folder,
-                }
-                headers = {
-                    "X-Upload-Password": upload_password,
-                }
-
-                resp = requests.post(
-                    upload_url,
-                    data=data,
-                    files=files,
-                    headers=headers,
-                    proxies=proxies,
-                    timeout=60,
-                )
-
-            if resp.status_code == 200:
-                logging.info("Uploaded %s successfully, deleting local copy.", path)
-                path.unlink()
-                successfully_uploaded.append(path)
-            else:
-                logging.error(
-                    "Server returned status %s for %s: %s",
-                    resp.status_code, path, resp.text
-                )
-
-        except Exception as e:
-            logging.error("Error uploading %s: %s", path, e)
-
-    return successfully_uploaded
-
-
-def main():
-    config = load_or_create_config()
-
-    setup_logging(config.get("log_file", "screen_guard.log"))
     logging.info(
-        "ScreenGuard (Tor) started. This program only logs YOUR OWN screen on YOUR machine."
+        "self-test passed: %s %sx%s mode=%s quality=%s bytes=%s",
+        filename,
+        parsed.size[0],
+        parsed.size[1],
+        parsed.mode,
+        DEFAULT_JPEG_QUALITY,
+        len(jpeg),
     )
 
-    interval_seconds = int(config.get("interval_seconds", 10))
-    screenshot_folder = config.get("screenshot_folder")
-    if not screenshot_folder:
-        screenshot_folder = str(Path.home() / "Pictures" / "Security")
 
-    folder_path = ensure_folder(screenshot_folder)
-    max_size_mb = float(config.get("max_folder_size_mb", 500))
-    upload_batch_size = int(config.get("upload_batch_size", 10))
-
-    server_url = config.get("server_url", "").strip()
-    upload_password = config.get("upload_password", "").strip()
-    tor_proxy = config.get("tor_socks_proxy", "").strip()
-
-    username = getpass.getuser()
-
-    logging.info("Using screenshot folder: %s", folder_path)
-    logging.info("Interval: %d seconds", interval_seconds)
-    logging.info("Local folder size limit: %.2f MB", max_size_mb)
-    logging.info("Server URL: %s", server_url)
-    logging.info("Tor proxy: %s", tor_proxy)
-    logging.info("Upload batch size: %d", upload_batch_size)
-    logging.info("Windows username (sent as 'username' to server): %s", username)
-
-    # On startup, treat all existing files as pending (for offline periods)
-    pending_screenshots: List[Path] = sorted(
-        [p for p in folder_path.rglob("*.png") if p.is_file()],
-        key=lambda p: p.stat().st_mtime
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Phase 1 primary-monitor JPEG pipeline")
+    parser.add_argument(
+        "--test-output",
+        type=Path,
+        help="Write one encoded JPEG to this directory and exit. Not used in normal runtime.",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run the synthetic 1920x1080 pipeline check without a display.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=DEFAULT_INTERVAL_SECONDS,
+        help="Seconds between captures in normal mode. Default 20. Not server-synced.",
+    )
+    parser.add_argument(
+        "--quality",
+        type=int,
+        default=DEFAULT_JPEG_QUALITY,
+        help="JPEG quality for this process. Default 40. Not server-synced.",
+    )
+    return parser.parse_args(argv)
 
-    try:
-        while True:
-            now = datetime.now()
-            timestamp = now.strftime("%Y%m%d_%H%M%S")
-            day_folder_name = now.strftime("%d-%m-%Y")
 
-            day_folder_path = ensure_folder(folder_path / day_folder_name)
-            filename = f"screenshot_{timestamp}.png"
-            screenshot_path = day_folder_path / filename
+def main(argv: list[str] | None = None) -> int:
+    ImageFile.LOAD_TRUNCATED_IMAGES = False
+    setup_logging()
+    args = parse_args(argv)
 
-            take_screenshot(screenshot_path)
+    if args.self_test:
+        run_self_test()
+        return 0
 
-            pending_screenshots.append(screenshot_path)
+    if args.test_output is not None:
+        destination = write_test_jpeg(args.test_output, args.quality)
+        logging.info("Test JPEG written: %s", destination)
+        return 0
 
-            rotate_screenshots(
-                folder_path,
-                max_size_mb,
-                protected=set(pending_screenshots)
-            )
-
-            if len(pending_screenshots) >= upload_batch_size and server_url and upload_password:
-                uploaded = upload_batch_to_server(
-                    server_url,
-                    upload_password,
-                    tor_proxy,
-                    username,
-                    pending_screenshots
-                )
-                pending_screenshots = [p for p in pending_screenshots if p not in uploaded]
-
-            time.sleep(interval_seconds)
-
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user. Attempting final upload...")
-
-        if server_url and upload_password and pending_screenshots:
-            uploaded = upload_batch_to_server(
-                server_url,
-                upload_password,
-                tor_proxy,
-                username,
-                pending_screenshots
-            )
-            pending_screenshots = [p for p in pending_screenshots if p not in uploaded]
-
-        logging.info("Exiting cleanly.")
-    except Exception as e:
-        logging.exception("Unexpected error: %s", e)
+    run_forever(args.interval, args.quality)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        logging.info("Stopped by user.")
+        raise SystemExit(0)
