@@ -579,6 +579,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--cache-self-test", action="store_true")
     parser.add_argument("--session-self-test", action="store_true")
+    parser.add_argument("--windows-api-self-test", action="store_true")
+    parser.add_argument("--windows-manual-tests", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--quality", type=int, default=DEFAULT_JPEG_QUALITY)
@@ -600,6 +602,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.session_self_test:
         run_session_self_test()
         return 0
+    if args.windows_manual_tests:
+        from windows_events import WINDOWS_MANUAL_TESTS
+
+        print(WINDOWS_MANUAL_TESTS)
+        return 0
+    if args.windows_api_self_test:
+        from windows_events import run_windows_api_self_test
+
+        return run_windows_api_self_test()
     if args.test_output is not None:
         logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, args.quality))
         return 0
