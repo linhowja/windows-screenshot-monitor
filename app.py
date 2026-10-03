@@ -233,12 +233,18 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
 
 
 def recovery_worker(server_ip: str, stop: threading.Event) -> None:
+    from windows_events import recovery_trigger
+
     while not stop.is_set():
         try:
+            logging.info("Recovery worker awakened")
             recover_cache(server_ip)
         except Exception as exc:
             logging.exception("Recovery worker failed and will retry: %s", exc)
-        stop.wait(RECOVERY_INTERVAL_SECONDS)
+        if stop.is_set():
+            return
+        recovery_trigger.wait(RECOVERY_INTERVAL_SECONDS)
+        recovery_trigger.clear()
 
 
 def start_recovery_worker(server_ip: str) -> tuple[threading.Thread, threading.Event]:
@@ -275,25 +281,39 @@ def handle_capture(server_ip: str, quality: int) -> None:
 
 
 def run_forever(server_ip: str, interval_seconds: int, quality: int) -> None:
+    from windows_events import client_state, query_initial_state, start_windows_listener
+
     hostname, username = client_identity()
+    query_initial_state()
+    start_windows_listener()
     logging.info(
-        "Phase 3 client started. server=%s:%s identity=%s_%s cache=%s",
+        "Phase 4 client started. server=%s:%s identity=%s_%s capture=%s",
         server_ip,
         SERVER_PORT,
         hostname,
         username,
-        active_cache_root,
+        client_state.capture_enabled,
     )
     _worker, _stop = start_recovery_worker(server_ip)
+    resumed = False
     while True:
+        if not client_state.capture_enabled:
+            client_state.wait_until_enabled()
+            resumed = True
+        if resumed:
+            resumed = False
+            if client_state.wait_until_disabled(interval_seconds):
+                continue
+        if not client_state.capture_enabled:
+            continue
         started = time.monotonic()
         try:
             handle_capture(server_ip, quality)
         except Exception as exc:
             logging.exception("Capture cycle failed and will continue: %s", exc)
         remaining = interval_seconds - (time.monotonic() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+        if remaining > 0 and client_state.wait_until_disabled(remaining):
+            logging.info("Capture wait interrupted by session or power state")
 
 
 def run_self_test() -> None:
@@ -496,12 +516,69 @@ def run_cache_self_test(cache_root: Path) -> None:
         claimed_cache_files.clear()
 
 
+def run_session_self_test() -> None:
+    import windows_events as events
+
+    state = events.ClientState(enabled=True)
+    events.recovery_trigger.clear()
+    state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
+    if state.capture_enabled:
+        raise AssertionError("lock did not disable capture")
+    state.apply_session(events.WTS_SESSION_UNLOCK, 1, 1)
+    if state.capture_enabled:
+        raise AssertionError("unlock enabled capture before desktop ready")
+    if events.recovery_trigger.is_set():
+        raise AssertionError("unlock triggered recovery before desktop ready")
+    state.apply_session(events.WTS_SESSION_DESKTOP_READY, 1, 1)
+    if not state.capture_enabled or not events.recovery_trigger.is_set():
+        raise AssertionError("desktop ready did not resume and trigger recovery")
+
+    events.recovery_trigger.clear()
+    state.apply_power(events.PBT_APMSUSPEND)
+    if state.capture_enabled:
+        raise AssertionError("suspend did not disable capture")
+    state.apply_power(events.PBT_APMRESUMEAUTOMATIC)
+    if not state.capture_enabled:
+        raise AssertionError("resume did not restore an unlocked desktop")
+
+    events.recovery_trigger.clear()
+    state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
+    state.apply_power(events.PBT_APMRESUMEAUTOMATIC)
+    if state.capture_enabled:
+        raise AssertionError("wake while locked enabled capture")
+    state.apply_session(events.WTS_SESSION_LOGOFF, 1, 1)
+    if state.capture_enabled or state.logged_on:
+        raise AssertionError("logoff did not stop capture")
+    state.apply_session(events.WTS_SESSION_LOGON, 2, 1)
+    if state.logged_on:
+        raise AssertionError("another session logon changed this client")
+
+    workers_before = [thread.name for thread in threading.enumerate()].count("cache-recovery")
+    stop = threading.Event()
+    events.recovery_trigger.set()
+    worker = threading.Thread(target=recovery_worker, args=("127.0.0.1", stop), name="cache-recovery")
+    worker.start()
+    time.sleep(0.2)
+    for _ in range(4):
+        state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
+        state.apply_session(events.WTS_SESSION_DESKTOP_READY, 1, 1)
+    time.sleep(0.2)
+    workers_after = [thread.name for thread in threading.enumerate()].count("cache-recovery")
+    stop.set()
+    events.recovery_trigger.set()
+    worker.join(2)
+    if workers_after != workers_before + 1:
+        raise AssertionError(f"recovery workers duplicated: {workers_before} {workers_after}")
+    logging.info("session self-test passed")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 3 screenshot client")
     parser.add_argument("--server-ip", default="127.0.0.1")
     parser.add_argument("--test-output", type=Path)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--cache-self-test", action="store_true")
+    parser.add_argument("--session-self-test", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--quality", type=int, default=DEFAULT_JPEG_QUALITY)
@@ -519,6 +596,9 @@ def main(argv: list[str] | None = None) -> int:
         import tempfile
 
         run_cache_self_test(Path(tempfile.mkdtemp(prefix="phase3-cache-")))
+        return 0
+    if args.session_self_test:
+        run_session_self_test()
         return 0
     if args.test_output is not None:
         logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, args.quality))
