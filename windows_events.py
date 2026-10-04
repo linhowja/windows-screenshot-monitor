@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 
 WM_POWERBROADCAST = 0x0218
 WM_WTSSESSION_CHANGE = 0x02B1
@@ -94,6 +95,9 @@ recovery_trigger = threading.Event()
 _listener_started = False
 _listener_lock = threading.Lock()
 _callback_keepalive = None
+desktop_ready_probe = None
+READINESS_ATTEMPTS = 10
+READINESS_DELAY_SECONDS = 0.3
 
 
 class ClientState:
@@ -140,7 +144,7 @@ class ClientState:
         self.changed.wait(timeout)
         return not self.capture_enabled
 
-    def _publish(self, was_enabled: bool) -> None:
+    def _publish(self, was_enabled: bool, trigger_recovery: bool = True) -> None:
         enabled = self._enabled_locked()
         if enabled != was_enabled:
             if enabled:
@@ -148,12 +152,13 @@ class ClientState:
             else:
                 logging.info("Capture disabled")
         self.changed.set()
-        if enabled and not was_enabled:
+        if trigger_recovery and enabled and not was_enabled:
             request_recovery("state became active")
 
     def apply_session(self, code: int, session_id: int, own_session_id: int | None) -> None:
         if own_session_id not in (None, 0) and session_id not in (0, own_session_id):
             return
+        confirm_readiness = False
         with self._lock:
             was_enabled = self._enabled_locked()
             if code == WTS_SESSION_LOGON:
@@ -173,9 +178,11 @@ class ClientState:
                 self.logged_on = True
                 self.session_unlocked = True
                 logging.info("Session UNLOCK")
-                if self.desktop_ready and self.system_awake:
+                if desktop_is_ready():
+                    self.desktop_ready = True
                     logging.info("Session unlocked; recovery triggered")
                 else:
+                    confirm_readiness = True
                     logging.info("Session unlocked; waiting for desktop readiness")
             elif code == WTS_SESSION_DESKTOP_READY:
                 self.logged_on = True
@@ -185,6 +192,8 @@ class ClientState:
             else:
                 return
             self._publish(was_enabled)
+        if confirm_readiness:
+            schedule_desktop_readiness(self)
 
     def apply_power(self, code: int) -> None:
         with self._lock:
@@ -217,6 +226,14 @@ class ClientState:
             self.session_unlocked = session_unlocked
             self.desktop_ready = desktop_ready
             self.system_awake = system_awake
+            self._publish(was_enabled, trigger_recovery=False)
+
+    def mark_desktop_ready(self) -> None:
+        with self._lock:
+            was_enabled = self._enabled_locked()
+            self.logged_on = True
+            self.desktop_ready = True
+            logging.info("Desktop readiness confirmed")
             self._publish(was_enabled)
 
     def disable_capture(self, reason: str) -> None:
@@ -230,6 +247,38 @@ client_state = ClientState(enabled=not sys.platform.startswith("win"))
 def request_recovery(reason: str) -> None:
     logging.info("Recovery triggered by session event: %s", reason)
     recovery_trigger.set()
+
+
+def desktop_is_ready() -> bool:
+    if desktop_ready_probe is not None:
+        return bool(desktop_ready_probe())
+    if not sys.platform.startswith("win"):
+        return True
+    ctypes, wintypes, _kernel32, user32, _wts = _windows_modules()
+    desktop_readobjects = 0x0001
+    user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    user32.OpenInputDesktop.restype = wintypes.HANDLE
+    user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    user32.CloseDesktop.restype = wintypes.BOOL
+    desktop = user32.OpenInputDesktop(0, False, desktop_readobjects)
+    if not desktop:
+        return False
+    user32.CloseDesktop(desktop)
+    return True
+
+
+def schedule_desktop_readiness(state: ClientState) -> None:
+    def confirm() -> None:
+        for _ in range(READINESS_ATTEMPTS):
+            if not state.session_unlocked:
+                return
+            if desktop_is_ready():
+                state.mark_desktop_ready()
+                return
+            time.sleep(READINESS_DELAY_SECONDS)
+        logging.info("Desktop readiness not confirmed after limited retries")
+
+    threading.Thread(target=confirm, name="desktop-readiness", daemon=True).start()
 
 
 def _windows_modules():
