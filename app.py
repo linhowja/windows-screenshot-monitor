@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import logging
+import logging.handlers
 import os
 import socket
 import sys
@@ -29,7 +30,11 @@ SERVER_PORT = 55550
 CACHE_RETENTION_DAYS = 3
 RECOVERY_INTERVAL_SECONDS = 300
 CACHE_ROOT = Path(r"C:\ProgramData\ScreenshotClient\Cache")
+CLIENT_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotClient")
 CLIENT_CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotClient\config.json")
+CLIENT_LOG_DIR = Path(r"C:\ProgramData\ScreenshotClient\Logs")
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 5
 DEFAULT_CLIENT_CONFIG = {
     "server_ip": "127.0.0.1",
     "server_port": SERVER_PORT,
@@ -164,13 +169,32 @@ def apply_server_config(raw: object) -> bool:
     return True
 
 
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] %(message)s",
+def setup_logging(log_dir: Path | None = None) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
     )
+    if not root.handlers:
+        stream = logging.StreamHandler(sys.stdout)
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
+    target = log_dir or CLIENT_LOG_DIR
+    if os.name == "nt" or log_dir is not None:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.handlers.RotatingFileHandler(
+                target / "client.log",
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            root.addHandler(file_handler)
+        except OSError as exc:
+            print(f"Client file log unavailable: {exc}", file=sys.stderr)
+    logging.info("Client logging started: %s", target)
 
 
 def make_filename(captured_at: datetime) -> str:
@@ -487,6 +511,17 @@ def run_self_test() -> None:
     if reopened.format != "JPEG" or reopened.mode != "L" or reopened.size != (1920, 1080):
         raise AssertionError("cached JPEG could not be reopened at original size")
     logging.info("client self-test passed: %s 1920x1080 mode=L cache-bytes-match", filename)
+    if CLIENT_CONFIG_PATH != Path(r"C:\ProgramData\ScreenshotClient\config.json"):
+        raise AssertionError("client config path is not fixed")
+    if CACHE_ROOT != Path(r"C:\ProgramData\ScreenshotClient\Cache"):
+        raise AssertionError("client cache path is not fixed")
+    import tempfile
+
+    log_dir = Path(tempfile.mkdtemp(prefix="phase7-client-log-"))
+    setup_logging(log_dir)
+    logging.info("Client startup log check")
+    if not (log_dir / "client.log").is_file():
+        raise AssertionError("client runtime log was not created")
 
 
 def run_cache_self_test(cache_root: Path) -> None:

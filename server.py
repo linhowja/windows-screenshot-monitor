@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -26,13 +27,17 @@ HOST = "0.0.0.0"
 PORT = 55550
 FILENAME_RE = re.compile(r"^(\d{8})_(\d{6})_(\d{2})\.jpg$")
 DEFAULT_SERVER_CONFIG = {
-    "storage_root": "dev_storage",
+    "storage_root": r"C:\ProgramData\ScreenshotServer\Storage",
     "screenshot_interval": 20,
     "jpeg_quality": 40,
     "client_cache_days": 3,
     "server_image_retention_days": 14,
 }
-CONFIG_PATH = Path("server_config.json")
+SERVER_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotServer")
+CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotServer\server_config.json")
+SERVER_LOG_DIR = Path(r"C:\ProgramData\ScreenshotServer\Logs")
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 5
 
 app = Flask(__name__)
 STORAGE_ROOT = Path("dev_storage")
@@ -40,13 +45,32 @@ server_config = dict(DEFAULT_SERVER_CONFIG)
 config_lock = threading.Lock()
 
 
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] %(message)s",
+def setup_logging(log_dir: Path | None = None) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
     )
+    if not root.handlers:
+        stream = logging.StreamHandler(sys.stdout)
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
+    target = log_dir or SERVER_LOG_DIR
+    if os.name == "nt" or log_dir is not None:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.handlers.RotatingFileHandler(
+                target / "server.log",
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            root.addHandler(file_handler)
+        except OSError as exc:
+            print(f"Server file log unavailable: {exc}", file=sys.stderr)
+    logging.info("Server logging started: %s", target)
 
 
 def configure_storage(storage_root: Path) -> None:
@@ -683,8 +707,10 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError("self-test storage root was not isolated")
         untouched = Path(tempfile.mkdtemp(prefix="phase5-default-config-")) / "server_config.json"
         defaulted = load_server_config(untouched)
-        if defaulted["storage_root"] != "dev_storage":
+        if defaulted["storage_root"] != DEFAULT_SERVER_CONFIG["storage_root"]:
             raise AssertionError("omitted storage override did not use config default")
+        if CONFIG_PATH != Path(r"C:\ProgramData\ScreenshotServer\server_config.json"):
+            raise AssertionError("server config path is not fixed")
         custom = {
             "storage_root": "dev_storage",
             "screenshot_interval": 30,

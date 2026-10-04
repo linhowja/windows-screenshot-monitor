@@ -1,0 +1,11 @@
+# Windows packaging foundation. Installers come in the next Phase 7 commit.
+# Run from the repository root on Windows 64-bit:
+#   py -3 -m pip install -r requirements.txt pyinstaller
+#   py -3 -m PyInstaller packaging/client.spec
+#   py -3 -m PyInstaller packaging/server.spec
+# Output:
+#   dist/ScreenshotClient.exe
+#   dist/ScreenshotServer.exe
+# Runtime files are not stored beside the executable.
+# Client uses C:\ProgramData\ScreenshotClient.
+# Server uses C:\ProgramData\ScreenshotServer.
