@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import os
 import re
@@ -24,14 +25,19 @@ from waitress import create_server, serve
 HOST = "0.0.0.0"
 PORT = 55550
 FILENAME_RE = re.compile(r"^(\d{8})_(\d{6})_(\d{2})\.jpg$")
-PHASE2_CONFIG = {
+DEFAULT_SERVER_CONFIG = {
+    "storage_root": "dev_storage",
     "screenshot_interval": 20,
     "jpeg_quality": 40,
     "client_cache_days": 3,
+    "server_image_retention_days": 14,
 }
+CONFIG_PATH = Path("server_config.json")
 
 app = Flask(__name__)
 STORAGE_ROOT = Path("dev_storage")
+server_config = dict(DEFAULT_SERVER_CONFIG)
+config_lock = threading.Lock()
 
 
 def setup_logging() -> None:
@@ -47,6 +53,89 @@ def configure_storage(storage_root: Path) -> None:
     global STORAGE_ROOT
     STORAGE_ROOT = storage_root
     STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _positive_int(value: object, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return default
+    return value
+
+
+def sanitize_server_config(raw: object) -> dict:
+    source = raw if isinstance(raw, dict) else {}
+    storage_root = source.get("storage_root", DEFAULT_SERVER_CONFIG["storage_root"])
+    if not isinstance(storage_root, str) or not storage_root.strip():
+        logging.error("Invalid storage_root; using default")
+        storage_root = DEFAULT_SERVER_CONFIG["storage_root"]
+    quality = source.get("jpeg_quality", DEFAULT_SERVER_CONFIG["jpeg_quality"])
+    if isinstance(quality, bool) or not isinstance(quality, int) or not 20 <= quality <= 100:
+        logging.error("Invalid jpeg_quality; using default")
+        quality = DEFAULT_SERVER_CONFIG["jpeg_quality"]
+    return {
+        "storage_root": storage_root,
+        "screenshot_interval": _positive_int(
+            source.get("screenshot_interval"), DEFAULT_SERVER_CONFIG["screenshot_interval"]
+        ),
+        "jpeg_quality": quality,
+        "client_cache_days": _positive_int(
+            source.get("client_cache_days"), DEFAULT_SERVER_CONFIG["client_cache_days"]
+        ),
+        "server_image_retention_days": _positive_int(
+            source.get("server_image_retention_days"),
+            DEFAULT_SERVER_CONFIG["server_image_retention_days"],
+        ),
+    }
+
+
+def save_server_config(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    data = json.dumps(payload, indent=2).encode("utf-8")
+    binary_flag = getattr(os, "O_BINARY", 0)
+    fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
+    try:
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                raise OSError("incomplete config write")
+            offset += written
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    os.replace(temporary, path)
+
+
+def load_server_config(path: Path | None = None, storage_override: Path | None = None) -> dict:
+    global server_config
+    path = path or CONFIG_PATH
+    raw: object = None
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.error("Server config is unreadable; using defaults: %s", exc)
+    validated = sanitize_server_config(raw)
+    if storage_override is not None:
+        validated["storage_root"] = str(storage_override)
+    save_server_config(path, validated)
+    with config_lock:
+        server_config = validated
+    configure_storage(Path(validated["storage_root"]))
+    return dict(validated)
+
+
+def client_config_payload() -> dict:
+    with config_lock:
+        return {
+            "screenshot_interval": server_config["screenshot_interval"],
+            "jpeg_quality": server_config["jpeg_quality"],
+            "client_cache_days": server_config["client_cache_days"],
+        }
 
 
 def safe_identity_part(value: str, field: str) -> str:
@@ -96,7 +185,7 @@ def destination_for(hostname: str, username: str, filename: str) -> Path:
 
 
 def success_response():
-    return jsonify(status="ok", config=PHASE2_CONFIG), 200
+    return jsonify(status="ok", config=client_config_payload()), 200
 
 
 def write_all(fd: int, payload: bytes) -> None:
@@ -167,8 +256,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--storage-root",
         type=Path,
-        default=Path("dev_storage"),
-        help="Development storage root. Phase 5 replaces this with configured storage.",
+        default=None,
+        help="Development override. Explicit CLI wins over server_config.json.",
     )
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
@@ -243,6 +332,8 @@ def run_self_test(storage_root: Path) -> None:
         )
         if response.status_code != 200 or response.json().get("status") != "ok":
             raise AssertionError(f"upload failed: {response.status_code} {response.text}")
+        if response.json().get("config") != client_config_payload():
+            raise AssertionError(f"upload config mismatch: {response.json()}")
 
         stored = storage_root / "LIN-PC01_child" / "20261003" / filename
         if not stored.is_file() or stored.read_bytes() != jpeg:
@@ -260,6 +351,8 @@ def run_self_test(storage_root: Path) -> None:
         )
         if duplicate.status_code != 200 or stored.read_bytes() != jpeg:
             raise AssertionError("duplicate upload overwrote or was rejected")
+        if duplicate.json().get("config") != client_config_payload():
+            raise AssertionError("duplicate response omitted current config")
         if list(stored.parent.glob("*.jpg")) != [stored]:
             raise AssertionError("duplicate upload created another file")
 
@@ -302,11 +395,32 @@ def run_self_test(storage_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = parse_args(argv)
-    configure_storage(args.storage_root)
+    config_path = CONFIG_PATH
     if args.self_test:
+        import tempfile
+
+        config_path = Path(tempfile.mkdtemp(prefix="phase5-server-config-")) / "server_config.json"
+        missing = load_server_config(config_path, storage_override=args.storage_root)
+        if missing["jpeg_quality"] != 40 or missing["server_image_retention_days"] != 14:
+            raise AssertionError(f"default server config mismatch: {missing}")
+        config_path.write_text("{not json", encoding="utf-8")
+        recovered = load_server_config(config_path, storage_override=args.storage_root)
+        if recovered["screenshot_interval"] != 20:
+            raise AssertionError("corrupt server config did not fall back")
+        config_path.write_text(
+            json.dumps({"jpeg_quality": 5, "screenshot_interval": 0, "storage_root": ""}),
+            encoding="utf-8",
+        )
+        invalid = load_server_config(config_path, storage_override=args.storage_root)
+        if invalid["jpeg_quality"] != 40 or invalid["screenshot_interval"] != 20:
+            raise AssertionError(f"invalid server config was accepted: {invalid}")
+        if not args.storage_root:
+            raise AssertionError("self-test requires --storage-root")
+        if Path(invalid["storage_root"]) != args.storage_root:
+            raise AssertionError("CLI storage override did not win")
         run_self_test(args.storage_root)
         return 0
-
+    load_server_config(config_path, storage_override=args.storage_root)
     logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
     serve(app, host=HOST, port=PORT, threads=4)
     return 0
