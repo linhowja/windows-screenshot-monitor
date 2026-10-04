@@ -254,10 +254,17 @@ HTTP 200
 例如：
 
 ```json
-{"status":"ok"}
+{
+  "status": "ok",
+  "config": {
+    "screenshot_interval": 20,
+    "jpeg_quality": 40,
+    "client_cache_days": 3
+  }
+}
 ```
 
-Client 只把 HTTP 200 視為成功。
+Client 只把 HTTP 200 視為 upload 成功。config 驗證失敗時，本次 upload 仍算成功，但不取代 Last Known Good。
 
 ## 11. Upload timeout
 
@@ -393,39 +400,34 @@ Server 發現相同 Client identity + date + filename 已存在時，可以直�
 
 ## 17. Client configuration model
 
-Client 初次安裝時至少知道：
+Client 初次啟動至少知道：
 
-- Server IPv4
+- Server IPv4，可由 `--server-ip` 提供
 - Server Port = 55550
 
-Client 本機保存最後一次成功取得的有效設定：
+Windows 正式 Last Known Good 檔案：
 
-- screenshot interval
-- jpeg quality
-- client cache retention
+```text
+C:\ProgramData\ScreenshotClient\config.json
+```
 
-這些設定就是 Last Known Good Configuration。
+內容包含 `server_ip`、`server_port`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`。寫入必須先寫暫存檔，再 `flush/fsync` 後 `os.replace()`。
+
+優先順序：
+
+```text
+explicit CLI override > Last Known Good / current server config > built-in default
+```
+
+未明確指定 `--interval` 或 `--quality` 時，不得用 parser default 蓋過 Last Known Good。
+
+Server 設定檔是 `server_config.json`，包含 `storage_root`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`、`server_image_retention_days`。優先順序是 explicit `--storage-root` > config file > default。Port 仍固定 55550。損壞或不合法的設定不得讓 Server 無法啟動。
 
 ## 18. Server configuration synchronization
 
 Server 是設定來源，但 Client 不依賴 Server 才能運作。
 
-建議：正常 upload 成功時，Server 在 HTTP 200 response 內順便帶回最新 Client 設定。
-
-例如：
-
-```json
-{
-  "status": "ok",
-  "config": {
-    "screenshot_interval": 20,
-    "jpeg_quality": 40,
-    "client_cache_days": 3
-  }
-}
-```
-
-Client 收到成功 response 後更新 Last Known Good Configuration。
+正常 upload 成功時，HTTP 200 帶回目前有效的 Client 設定。不傳 `storage_root` 或 `server_image_retention_days`。Client 驗證成功後才更新 runtime 與 Last Known Good。Server 離線時繼續使用最後有效設定，不退回預設值。Duplicate upload 的 HTTP 200 也帶同一份 config。
 
 ## 19. Server unavailable behavior
 
@@ -474,7 +476,7 @@ MVP 不做：
 14 Days
 ```
 
-Server 依日期刪除超過保留期限的圖片資料。
+Phase 5 只把 `server_image_retention_days` 存進 Server config。實際依日期刪除留到後續 retention phase，這一階段不刪 Server 圖片。
 
 ## 22. Server GUI
 
