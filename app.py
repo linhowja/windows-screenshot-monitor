@@ -45,11 +45,24 @@ active_cache_root = CACHE_ROOT
 active_client_config_path = CLIENT_CONFIG_PATH
 runtime_config = dict(DEFAULT_CLIENT_CONFIG)
 config_lock = threading.Lock()
+cli_overrides = {"server_ip": None, "interval": None, "quality": None}
 
 
 def current_runtime() -> dict:
     with config_lock:
         return dict(runtime_config)
+
+
+def effective_runtime() -> dict:
+    """Built-in defaults, then LKG, then explicit CLI overrides."""
+    runtime = current_runtime()
+    if cli_overrides["server_ip"]:
+        runtime["server_ip"] = cli_overrides["server_ip"]
+    if cli_overrides["interval"] is not None:
+        runtime["screenshot_interval"] = cli_overrides["interval"]
+    if cli_overrides["quality"] is not None:
+        runtime["jpeg_quality"] = cli_overrides["quality"]
+    return runtime
 
 
 def configure_client_config_path(path: Path) -> None:
@@ -332,7 +345,7 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
             claimed_cache_files.add(path)
         try:
             jpeg = path.read_bytes()
-            if upload_jpeg(server_ip, hostname, username, path.name, jpeg):
+            if upload_jpeg(effective_runtime()["server_ip"], hostname, username, path.name, jpeg):
                 with cache_lock:
                     path.unlink(missing_ok=True)
                     claimed_cache_files.discard(path)
@@ -350,14 +363,14 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
     return uploaded
 
 
-def recovery_worker(server_ip: str, stop: threading.Event) -> None:
+def recovery_worker(stop: threading.Event) -> None:
     from windows_events import recovery_trigger
 
     startup = True
     while not stop.is_set():
         try:
             logging.info("Recovery worker awakened")
-            recover_cache(server_ip)
+            recover_cache(effective_runtime()["server_ip"])
         except Exception as exc:
             logging.exception("Recovery worker failed and will retry: %s", exc)
         if stop.is_set():
@@ -373,7 +386,7 @@ def start_recovery_worker(server_ip: str) -> tuple[threading.Thread, threading.E
     stop = threading.Event()
     worker = threading.Thread(
         target=recovery_worker,
-        args=(server_ip, stop),
+        args=(stop,),
         name="cache-recovery",
         daemon=True,
     )
@@ -402,30 +415,30 @@ def handle_capture(server_ip: str, quality: int) -> None:
         del jpeg
 
 
-def run_forever(
-    server_ip: str,
-    interval_override: int | None = None,
-    quality_override: int | None = None,
-) -> None:
+def run_forever() -> None:
     from windows_events import client_state, query_initial_state, start_windows_listener
 
     hostname, username = client_identity()
     query_initial_state()
     start_windows_listener()
+    initial = effective_runtime()
     logging.info(
-        "Phase 5 client started. server=%s:%s identity=%s_%s capture=%s",
-        server_ip,
+        "Phase 5 client started. server=%s:%s interval=%s quality=%s identity=%s_%s capture=%s",
+        initial["server_ip"],
         SERVER_PORT,
+        initial["screenshot_interval"],
+        initial["jpeg_quality"],
         hostname,
         username,
         client_state.capture_enabled,
     )
-    _worker, _stop = start_recovery_worker(server_ip)
+    _worker, _stop = start_recovery_worker(initial["server_ip"])
     resumed = False
     while True:
-        runtime = current_runtime()
-        interval_seconds = interval_override or runtime["screenshot_interval"]
-        quality = quality_override or runtime["jpeg_quality"]
+        runtime = effective_runtime()
+        interval_seconds = runtime["screenshot_interval"]
+        quality = runtime["jpeg_quality"]
+        server_ip = runtime["server_ip"]
         if not client_state.capture_enabled:
             client_state.wait_until_enabled()
             resumed = True
@@ -730,7 +743,7 @@ def run_session_self_test() -> None:
 
     globals()["recover_cache"] = counting_recover
     stop = threading.Event()
-    worker = threading.Thread(target=recovery_worker, args=("127.0.0.1", stop), name="cache-recovery")
+    worker = threading.Thread(target=recovery_worker, args=(stop,), name="cache-recovery")
     worker.start()
     time.sleep(0.4)
     if runs["count"] != 1:
@@ -743,7 +756,7 @@ def run_session_self_test() -> None:
     workers_before = [thread.name for thread in threading.enumerate()].count("cache-recovery")
     stop = threading.Event()
     events.recovery_trigger.set()
-    worker = threading.Thread(target=recovery_worker, args=("127.0.0.1", stop), name="cache-recovery")
+    worker = threading.Thread(target=recovery_worker, args=(stop,), name="cache-recovery")
     worker.start()
     time.sleep(0.2)
     for _ in range(4):
@@ -793,12 +806,57 @@ def run_config_self_test(config_dir: Path) -> None:
     parsed.load()
     if parsed.size != (1920, 1080) or parsed.mode != "L":
         raise AssertionError("resolution regression")
+    active_client_config_path.write_text(
+        json.dumps({
+            "server_ip": "192.168.2.100",
+            "server_port": 55550,
+            "screenshot_interval": 30,
+            "jpeg_quality": 50,
+            "client_cache_days": 5,
+        }),
+        encoding="utf-8",
+    )
+    cli_overrides["server_ip"] = None
+    cli_overrides["interval"] = None
+    cli_overrides["quality"] = None
+    load_client_config()
+    no_override = effective_runtime()
+    if no_override["server_ip"] != "192.168.2.100" or no_override["screenshot_interval"] != 30 or no_override["jpeg_quality"] != 50:
+        raise AssertionError(f"LKG was not used without CLI override: {no_override}")
+    cli_overrides["interval"] = 60
+    cli_overrides["quality"] = 70
+    overridden = effective_runtime()
+    if overridden["screenshot_interval"] != 60 or overridden["jpeg_quality"] != 70:
+        raise AssertionError(f"explicit interval/quality override failed: {overridden}")
+    cli_overrides["interval"] = None
+    cli_overrides["quality"] = None
+    cli_overrides["server_ip"] = "127.0.0.1"
+    if effective_runtime()["server_ip"] != "127.0.0.1":
+        raise AssertionError("explicit server IP override failed")
+    cli_overrides["server_ip"] = None
+    load_client_config()
+    if current_runtime()["screenshot_interval"] != 20:
+        current = current_runtime()
+        current["screenshot_interval"] = 20
+        current["jpeg_quality"] = 40
+        save_client_config(current)
+        with config_lock:
+            runtime_config.clear()
+            runtime_config.update(current)
+    if not apply_server_config({"screenshot_interval": 30, "jpeg_quality": 50, "client_cache_days": 5}):
+        raise AssertionError("HTTP 200 config was not applied")
+    synced = effective_runtime()
+    if synced["screenshot_interval"] != 30 or synced["jpeg_quality"] != 50:
+        raise AssertionError(f"next capture would not use synced config: {synced}")
+    upload_jpeg("192.168.2.100", "host", "user", "20261003_162000_38.jpg", b"jpeg", port=55551)
+    if effective_runtime()["screenshot_interval"] != 30 or effective_runtime()["jpeg_quality"] != 50:
+        raise AssertionError("unavailable server reset synced runtime")
     logging.info("config self-test passed")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 3 screenshot client")
-    parser.add_argument("--server-ip", default="127.0.0.1")
+    parser.add_argument("--server-ip", help="Explicit override. Omit to use Last Known Good.")
     parser.add_argument("--test-output", type=Path)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--cache-self-test", action="store_true")
@@ -842,14 +900,17 @@ def main(argv: list[str] | None = None) -> int:
         run_config_self_test(Path(tempfile.mkdtemp(prefix="phase5-client-config-")))
         return 0
     load_client_config(args.server_ip)
-    quality = args.quality or current_runtime()["jpeg_quality"]
+    cli_overrides["server_ip"] = args.server_ip
+    cli_overrides["interval"] = args.interval
+    cli_overrides["quality"] = args.quality
+    runtime = effective_runtime()
     if args.test_output is not None:
-        logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, quality))
+        logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, runtime["jpeg_quality"]))
         return 0
     if args.once:
-        handle_capture(args.server_ip, quality)
+        handle_capture(runtime["server_ip"], runtime["jpeg_quality"])
         return 0
-    run_forever(args.server_ip, args.interval, args.quality)
+    run_forever()
     return 0
 
 
