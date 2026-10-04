@@ -418,6 +418,12 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError("self-test requires --storage-root")
         if Path(invalid["storage_root"]) != args.storage_root:
             raise AssertionError("CLI storage override did not win")
+        windows_root = sanitize_server_config({"storage_root": r"D:\ScreenshotServer"})
+        if windows_root["storage_root"] != r"D:\ScreenshotServer":
+            raise AssertionError("Windows storage path was rejected")
+        relative_root = sanitize_server_config({"storage_root": "dev_storage"})
+        if relative_root["storage_root"] != "dev_storage":
+            raise AssertionError("relative storage path was rejected")
         run_self_test(args.storage_root)
         return 0
     load_server_config(config_path, storage_override=args.storage_root)
