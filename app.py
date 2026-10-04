@@ -157,7 +157,8 @@ def cache_jpeg(filename: str, jpeg: bytes) -> bool:
                 return True
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".tmp")
-            fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            binary_flag = getattr(os, "O_BINARY", 0)
+            fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
             try:
                 write_all(fd, jpeg)
             except Exception:
@@ -329,11 +330,25 @@ def run_self_test() -> None:
         raise AssertionError(filename)
     if not re.fullmatch(FILENAME_RE, filename) or scaled_size(1920, 1080) != (480, 270):
         raise AssertionError("phase 1 pipeline mismatch")
-    parsed = Image.open(io.BytesIO(process_screenshot(source)))
+    jpeg = process_screenshot(source)
+    parsed = Image.open(io.BytesIO(jpeg))
     parsed.load()
     if parsed.format != "JPEG" or parsed.mode != "L" or parsed.size != (480, 270):
         raise AssertionError("phase 1 output mismatch")
-    logging.info("client self-test passed: %s 480x270 mode=L", filename)
+    import tempfile
+
+    configure_cache_root(Path(tempfile.mkdtemp(prefix="phase1-cache-")))
+    claimed_cache_files.clear()
+    if not cache_jpeg(filename, jpeg):
+        raise AssertionError("cache write failed")
+    cached = cache_destination(filename).read_bytes()
+    if cached != jpeg:
+        raise AssertionError("cache JPEG bytes diverged from payload")
+    reopened = Image.open(io.BytesIO(cached))
+    reopened.load()
+    if reopened.format != "JPEG" or reopened.mode != "L":
+        raise AssertionError("cached JPEG could not be reopened")
+    logging.info("client self-test passed: %s 480x270 mode=L cache-bytes-match", filename)
 
 
 def run_cache_self_test(cache_root: Path) -> None:
