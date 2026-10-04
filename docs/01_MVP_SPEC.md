@@ -470,13 +470,21 @@ MVP 不做：
 
 ## 21. Server image retention
 
-預設：
+`server_image_retention_days` 是提醒與刪除判斷門檻，預設 14 天。Server 不會在背景自動刪除圖片。
+
+每個本機日期只檢查並詢問一次。狀態存在 `server_config.json` 同一層的 `server_retention_state.json`，不放在 Storage Root。
+
+啟動順序：
 
 ```text
-14 Days
+load config
+→ retention check / confirmation
+→ start HTTP server
 ```
 
-Phase 5 只把 `server_image_retention_days` 存進 Server config。實際依日期刪除留到後續 retention phase，這一階段不刪 Server 圖片。
+只有符合正式 storage hierarchy、檔名日期有效、且檔名日期與 date directory 相同的 `.jpg`，才可能成為候選。年齡以 filename timestamp 計算，不用 filesystem mtime。只有嚴格超過 retention days 才詢問。
+
+使用者選 Yes 才刪除本次掃描清單。選 No、關閉視窗或無法取得選擇時完全保留，並提醒自行搬移。非正式 hierarchy、`.tmp`、其他副檔名與日期錯誤檔案永不因 Retention 刪除。
 
 ## 22. Server GUI
 
@@ -595,6 +603,6 @@ P3  HTTP upload / HTTP 200 ACK / 5 sec timeout
 P4  Local Cache / recovery / duplicate handling
 P5  Lock / sleep / unlock / wake
 P6  Server config / Last Known Good Config
-P7  Retention
+P7  Retention check + manual confirmation
 P8  Installer / Task Scheduler / Firewall / Uninstaller
 ```
