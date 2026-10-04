@@ -102,20 +102,21 @@ Unlock / Wake 後應恢復正常計時，不要求解鎖瞬間立即產生額外
 
 ```text
 Capture
-  -> Resize width = 25%, height = 25%
+  -> Keep original resolution
   -> 8-bit Grayscale
   -> JPEG encode
   -> Upload
 ```
 
+輸出影像維持 Primary Monitor 擷取時的原始寬度與高度，不進行解析度縮放。
+
 例如：
 
 ```text
-1920 x 1080
-    -> 480 x 270
+1024 x 768  -> 1024 x 768
+1920 x 1080 -> 1920 x 1080
+2560 x 1440 -> 2560 x 1440
 ```
-
-注意：寬與高各為 25%，因此總像素約為原始的 6.25%。
 
 ### JPEG quality
 
@@ -282,7 +283,6 @@ Client 必須繼續工作，不因單張上傳 timeout 而停止 capture。
 
 ```text
 Capture
- -> Resize
  -> Grayscale
  -> JPEG
  -> HTTP POST
@@ -588,7 +588,7 @@ Server：
 
 ```text
 P1  Screenshot
-P2  Resize / grayscale / JPEG
+P2  Grayscale / JPEG
 P3  HTTP upload / HTTP 200 ACK / 5 sec timeout
 P4  Local Cache / recovery / duplicate handling
 P5  Lock / sleep / unlock / wake
