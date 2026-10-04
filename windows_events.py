@@ -1,6 +1,7 @@
 """Windows session and power events for the Phase 4 client.
 
-This module owns the capture state machine and a hidden message window.
+Session events use a hidden message window. Power suspend/resume uses
+PowerRegisterSuspendResumeNotification with DEVICE_NOTIFY_CALLBACK.
 The window is only an event receiver. It is not a user interface.
 """
 
@@ -14,7 +15,7 @@ import time
 WM_POWERBROADCAST = 0x0218
 WM_WTSSESSION_CHANGE = 0x02B1
 NOTIFY_FOR_THIS_SESSION = 0
-DEVICE_NOTIFY_WINDOW_HANDLE = 0
+DEVICE_NOTIFY_CALLBACK = 0x00000002
 HWND_MESSAGE = -3
 
 WTS_SESSION_LOGON = 0x5
@@ -56,13 +57,14 @@ C. Unlock
    Not expected: a second recovery worker.
 
 D. Sleep
-   Put Windows to sleep.
-   Expected: capture disabled before suspend; no screenshot is taken for sleep.
+   Power events come from PowerRegisterSuspendResumeNotification callback,
+   not from RegisterSuspendResumeNotification on the hidden window.
+   Expected: Type 4 disables capture before S3; no screenshot is taken.
    Not expected: catch-up screenshots for the sleep duration.
 
 E. Wake while locked
-   Wake the computer while the lock screen is still showing.
-   Expected: system awake, capture still disabled, no screenshot.
+   Wake callback Type 7 and Type 18 set system awake.
+   Expected: capture still disabled while the lock screen is showing.
    Not expected: capture before unlock and desktop ready.
 
 F. Unlock after wake
@@ -95,6 +97,9 @@ recovery_trigger = threading.Event()
 _listener_started = False
 _listener_lock = threading.Lock()
 _callback_keepalive = None
+_power_callback = None
+_power_parameters = None
+_power_registration = None
 desktop_ready_probe = None
 READINESS_ATTEMPTS = 10
 READINESS_DELAY_SECONDS = 0.3
@@ -340,10 +345,6 @@ def _windows_modules():
     user32.DispatchMessageW.restype = ctypes.c_ssize_t
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.DestroyWindow.restype = wintypes.BOOL
-    user32.RegisterSuspendResumeNotification.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    user32.RegisterSuspendResumeNotification.restype = wintypes.HANDLE
-    user32.UnregisterSuspendResumeNotification.argtypes = [wintypes.HANDLE]
-    user32.UnregisterSuspendResumeNotification.restype = wintypes.BOOL
     return ctypes, wintypes, kernel32, user32, wtsapi32
 
 
@@ -433,6 +434,63 @@ def query_initial_state() -> None:
         logging.info("Startup state is inactive; waiting for desktop readiness")
 
 
+def register_power_callback():
+    """Register the verified S3 callback. The callback only updates state."""
+    global _power_callback, _power_parameters, _power_registration
+    ctypes, wintypes, kernel32, _user32, _wts = _windows_modules()
+    powrprof = ctypes.WinDLL("powrprof", use_last_error=True)
+    powrprof.PowerRegisterSuspendResumeNotification.argtypes = [
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    powrprof.PowerRegisterSuspendResumeNotification.restype = wintypes.DWORD
+    callback_type = ctypes.WINFUNCTYPE(
+        wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p,
+    )
+
+    def callback(_context, event_type, _setting):
+        client_state.apply_power(int(event_type))
+        return 0
+
+    class DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(ctypes.Structure):
+        _fields_ = [
+            ("Callback", callback_type),
+            ("Context", ctypes.c_void_p),
+        ]
+
+    routine = callback_type(callback)
+    parameters = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(routine, None)
+    registration = wintypes.HANDLE()
+    status = powrprof.PowerRegisterSuspendResumeNotification(
+        DEVICE_NOTIFY_CALLBACK,
+        ctypes.byref(parameters),
+        ctypes.byref(registration),
+    )
+    last_error = kernel32.GetLastError()
+    if status != 0 or not registration:
+        return None, int(status), int(last_error)
+    _power_callback = routine
+    _power_parameters = parameters
+    _power_registration = registration
+    return registration, int(status), int(last_error)
+
+
+def unregister_power_callback() -> None:
+    global _power_callback, _power_parameters, _power_registration
+    registration = _power_registration
+    if not registration:
+        return
+    ctypes, wintypes, _kernel32, _user32, _wts = _windows_modules()
+    powrprof = ctypes.WinDLL("powrprof", use_last_error=True)
+    powrprof.PowerUnregisterSuspendResumeNotification.argtypes = [wintypes.HANDLE]
+    powrprof.PowerUnregisterSuspendResumeNotification.restype = wintypes.DWORD
+    powrprof.PowerUnregisterSuspendResumeNotification(registration)
+    _power_registration = None
+    _power_callback = None
+    _power_parameters = None
+
+
 def start_windows_listener() -> None:
     global _listener_started
     if not sys.platform.startswith("win"):
@@ -465,9 +523,6 @@ def _message_loop() -> None:
         if msg == WM_WTSSESSION_CHANGE:
             client_state.apply_session(int(wparam), int(lparam), own_session)
             return 0
-        if msg == WM_POWERBROADCAST:
-            client_state.apply_power(int(wparam))
-            return 1 if int(wparam) == PBT_APMSUSPEND else 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     callback = wndproc_type(wndproc)
@@ -507,10 +562,11 @@ def _message_loop() -> None:
             f"WTSRegisterSessionNotification failed: {kernel32.GetLastError()}"
         )
         return
-    power_notify = user32.RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)
-    if not power_notify:
+    registration, status, last_error = register_power_callback()
+    if registration is None:
         client_state.disable_capture(
-            f"RegisterSuspendResumeNotification failed: {kernel32.GetLastError()}"
+            "PowerRegisterSuspendResumeNotification failed: "
+            f"status={status} GetLastError={last_error}"
         )
         wts.WTSUnRegisterSessionNotification(hwnd)
         return
@@ -518,8 +574,8 @@ def _message_loop() -> None:
     while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
         user32.TranslateMessage(ctypes.byref(message))
         user32.DispatchMessageW(ctypes.byref(message))
+    unregister_power_callback()
     wts.WTSUnRegisterSessionNotification(hwnd)
-    user32.UnregisterSuspendResumeNotification(power_notify)
 
 
 def run_windows_api_self_test() -> int:
@@ -575,18 +631,21 @@ def run_windows_api_self_test() -> int:
         print(f"WTS registration failed: {kernel32.GetLastError()}")
         user32.DestroyWindow(hwnd)
         return 1
-    power_notify = user32.RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)
-    if not power_notify:
-        print(f"suspend/resume registration failed: {kernel32.GetLastError()}")
+    registration, status, last_error = register_power_callback()
+    if registration is None:
+        print(
+            "PowerRegisterSuspendResumeNotification failed "
+            f"status={status} GetLastError={last_error}"
+        )
         wts.WTSUnRegisterSessionNotification(hwnd)
         user32.DestroyWindow(hwnd)
         return 1
     print(f"hidden message window: {hwnd}")
     print("WTS registration: ok")
-    print("suspend/resume registration: ok")
+    print(f"power callback registration: ok handle={registration.value} status={status}")
     print(f"current session ID: {session_id}")
     print(f"initial session logged_on={logged_on} unlocked={unlocked} state={state} flags={flags}")
-    user32.UnregisterSuspendResumeNotification(power_notify)
+    unregister_power_callback()
     wts.WTSUnRegisterSessionNotification(hwnd)
     user32.DestroyWindow(hwnd)
     print("Windows API self-test passed")
