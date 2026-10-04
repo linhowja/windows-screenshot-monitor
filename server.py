@@ -414,17 +414,23 @@ def main(argv: list[str] | None = None) -> int:
         invalid = load_server_config(config_path, storage_override=args.storage_root)
         if invalid["jpeg_quality"] != 40 or invalid["screenshot_interval"] != 20:
             raise AssertionError(f"invalid server config was accepted: {invalid}")
-        if not args.storage_root:
-            raise AssertionError("self-test requires --storage-root")
-        if Path(invalid["storage_root"]) != args.storage_root:
-            raise AssertionError("CLI storage override did not win")
         windows_root = sanitize_server_config({"storage_root": r"D:\ScreenshotServer"})
         if windows_root["storage_root"] != r"D:\ScreenshotServer":
             raise AssertionError("Windows storage path was rejected")
         relative_root = sanitize_server_config({"storage_root": "dev_storage"})
         if relative_root["storage_root"] != "dev_storage":
             raise AssertionError("relative storage path was rejected")
-        run_self_test(args.storage_root)
+        storage_root = args.storage_root or Path(tempfile.mkdtemp(prefix="phase5-storage-"))
+        if args.storage_root is not None and Path(invalid["storage_root"]) != args.storage_root:
+            raise AssertionError("CLI storage override did not win")
+        isolated = load_server_config(config_path, storage_override=storage_root)
+        if Path(isolated["storage_root"]) != storage_root:
+            raise AssertionError("self-test storage root was not isolated")
+        untouched = Path(tempfile.mkdtemp(prefix="phase5-default-config-")) / "server_config.json"
+        defaulted = load_server_config(untouched)
+        if defaulted["storage_root"] != "dev_storage":
+            raise AssertionError("omitted storage override did not use config default")
+        run_self_test(storage_root)
         return 0
     load_server_config(config_path, storage_override=args.storage_root)
     logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
