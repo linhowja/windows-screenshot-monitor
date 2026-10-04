@@ -453,6 +453,7 @@ def run_forever() -> None:
             handle_capture(server_ip, quality)
         except Exception as exc:
             logging.exception("Capture cycle failed and will continue: %s", exc)
+        interval_seconds = effective_runtime()["screenshot_interval"]
         remaining = interval_seconds - (time.monotonic() - started)
         if remaining > 0 and client_state.wait_until_disabled(remaining):
             logging.info("Capture wait interrupted by session or power state")
@@ -851,6 +852,21 @@ def run_config_self_test(config_dir: Path) -> None:
     upload_jpeg("192.168.2.100", "host", "user", "20261003_162000_38.jpg", b"jpeg", port=55551)
     if effective_runtime()["screenshot_interval"] != 30 or effective_runtime()["jpeg_quality"] != 50:
         raise AssertionError("unavailable server reset synced runtime")
+    started = time.monotonic()
+    before = effective_runtime()["screenshot_interval"]
+    if not apply_server_config({"screenshot_interval": 45, "jpeg_quality": 55, "client_cache_days": 5}):
+        raise AssertionError("interval sync config was rejected")
+    next_interval = effective_runtime()["screenshot_interval"]
+    next_quality = effective_runtime()["jpeg_quality"]
+    remaining = next_interval - (time.monotonic() - started)
+    if before == 45 or next_interval != 45 or next_quality != 55 or remaining < 40:
+        raise AssertionError("next capture cycle did not adopt synced interval and quality")
+    cli_overrides["interval"] = 60
+    cli_overrides["quality"] = 70
+    if effective_runtime()["screenshot_interval"] != 60 or effective_runtime()["jpeg_quality"] != 70:
+        raise AssertionError("CLI override lost priority after sync")
+    cli_overrides["interval"] = None
+    cli_overrides["quality"] = None
     logging.info("config self-test passed")
 
 
