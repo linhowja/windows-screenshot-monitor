@@ -1,8 +1,7 @@
 {
-    "root_folder": "/home/anass24/shotlogger_data",
-    "web_username": "admin",
-    "web_password": "",
-    "upload_password": "YOUR_UPLOAD_PASSWORD",
-    "site_name": "ShotLogger",
-    "web_password_hash": "YOUR_HASHED_PASSWORD"
+  "storage_root": "dev_storage",
+  "screenshot_interval": 20,
+  "jpeg_quality": 40,
+  "client_cache_days": 3,
+  "server_image_retention_days": 14
 }
