@@ -427,7 +427,7 @@ Server 設定檔是 `server_config.json`，包含 `storage_root`、`screenshot_i
 
 Server 是設定來源，但 Client 不依賴 Server 才能運作。
 
-正常 upload 成功時，HTTP 200 帶回目前有效的 Client 設定。不傳 `storage_root` 或 `server_image_retention_days`。Client 驗證成功後才更新 runtime 與 Last Known Good。Server 離線時繼續使用最後有效設定，不退回預設值。Duplicate upload 的 HTTP 200 也帶同一份 config。
+正常 upload 成功時，HTTP 200 帶回目前有效的 Client 設定。不傳 `storage_root` 或 `server_image_retention_days`。Client 驗證成功後才更新 runtime 與 Last Known Good。下一次等待與下一張截圖使用更新後的 interval 與 quality；明確指定的 CLI override 仍優先。Server 離線時繼續使用最後有效設定，不退回預設值。Duplicate upload 的 HTTP 200 也帶同一份 config。`python server.py --self-test` 可不帶 `--storage-root`，正式啟動的優先順序仍是 `--storage-root` > `server_config.json` > default。
 
 ## 19. Server unavailable behavior
 
