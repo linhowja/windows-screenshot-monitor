@@ -20,17 +20,8 @@ PBT_NAMES = {
     7: "PBT_APMRESUMESUSPEND",
     18: "PBT_APMRESUMEAUTOMATIC",
 }
-
-CALLBACK = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p)
 _callback_keepalive = None
 _parameters_keepalive = None
-
-
-class DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(ctypes.Structure):
-    _fields_ = [
-        ("Callback", CALLBACK),
-        ("Context", ctypes.c_void_p),
-    ]
 
 
 def main() -> int:
@@ -39,6 +30,14 @@ def main() -> int:
         return 2
 
     global _callback_keepalive, _parameters_keepalive
+    callback_type = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p)
+
+    class DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(ctypes.Structure):
+        _fields_ = [
+            ("Callback", callback_type),
+            ("Context", ctypes.c_void_p),
+        ]
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     powrprof = ctypes.WinDLL("powrprof", use_last_error=True)
     kernel32.GetLastError.argtypes = []
@@ -58,7 +57,7 @@ def main() -> int:
         print(f"Power callback Type={value} Type_hex=0x{value:04X} name={name}", flush=True)
         return 0
 
-    routine = CALLBACK(callback)
+    routine = callback_type(callback)
     parameters = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(routine, None)
     _callback_keepalive = routine
     _parameters_keepalive = parameters
