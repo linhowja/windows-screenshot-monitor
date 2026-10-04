@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import os
 import socket
@@ -28,11 +29,126 @@ SERVER_PORT = 55550
 CACHE_RETENTION_DAYS = 3
 RECOVERY_INTERVAL_SECONDS = 300
 CACHE_ROOT = Path(r"C:\ProgramData\ScreenshotClient\Cache")
+CLIENT_CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotClient\config.json")
+DEFAULT_CLIENT_CONFIG = {
+    "server_ip": "127.0.0.1",
+    "server_port": SERVER_PORT,
+    "screenshot_interval": DEFAULT_INTERVAL_SECONDS,
+    "jpeg_quality": DEFAULT_JPEG_QUALITY,
+    "client_cache_days": CACHE_RETENTION_DAYS,
+}
 FILENAME_RE = r"^\d{8}_\d{6}_\d{2}\.jpg$"
 
 cache_lock = threading.Lock()
 claimed_cache_files: set[Path] = set()
 active_cache_root = CACHE_ROOT
+active_client_config_path = CLIENT_CONFIG_PATH
+runtime_config = dict(DEFAULT_CLIENT_CONFIG)
+config_lock = threading.Lock()
+
+
+def current_runtime() -> dict:
+    with config_lock:
+        return dict(runtime_config)
+
+
+def configure_client_config_path(path: Path) -> None:
+    global active_client_config_path
+    active_client_config_path = path
+
+
+def _valid_client_fields(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    interval = raw.get("screenshot_interval")
+    quality = raw.get("jpeg_quality")
+    days = raw.get("client_cache_days")
+    server_ip = raw.get("server_ip")
+    server_port = raw.get("server_port")
+    if (
+        isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
+        or isinstance(quality, bool) or not isinstance(quality, int) or not 20 <= quality <= 100
+        or isinstance(days, bool) or not isinstance(days, int) or days <= 0
+        or not isinstance(server_ip, str) or not server_ip.strip()
+        or server_port != SERVER_PORT
+    ):
+        return None
+    return {
+        "server_ip": server_ip,
+        "server_port": SERVER_PORT,
+        "screenshot_interval": interval,
+        "jpeg_quality": quality,
+        "client_cache_days": days,
+    }
+
+
+def save_client_config(payload: dict) -> None:
+    path = active_client_config_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    data = json.dumps(payload, indent=2).encode("utf-8")
+    binary_flag = getattr(os, "O_BINARY", 0)
+    fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
+    try:
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                raise OSError("incomplete config write")
+            offset += written
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    os.replace(temporary, path)
+
+
+def load_client_config(server_ip: str | None = None) -> dict:
+    global runtime_config
+    raw: object = None
+    if active_client_config_path.exists():
+        try:
+            raw = json.loads(active_client_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.error("Client config is unreadable; using defaults: %s", exc)
+    validated = _valid_client_fields(raw)
+    if validated is None:
+        validated = dict(DEFAULT_CLIENT_CONFIG)
+        if server_ip:
+            validated["server_ip"] = server_ip
+        logging.error("Client config missing or invalid; wrote defaults")
+    elif server_ip:
+        validated["server_ip"] = server_ip
+    save_client_config(validated)
+    with config_lock:
+        runtime_config = validated
+    return dict(validated)
+
+
+def apply_server_config(raw: object) -> bool:
+    current = current_runtime()
+    candidate = dict(current)
+    if isinstance(raw, dict):
+        candidate.update(raw)
+    candidate["server_ip"] = current["server_ip"]
+    candidate["server_port"] = SERVER_PORT
+    validated = _valid_client_fields(candidate)
+    if validated is None:
+        logging.error("Server config rejected; keeping last known good")
+        return False
+    try:
+        save_client_config(validated)
+    except OSError as exc:
+        logging.error("Could not save last known good config: %s", exc)
+        return False
+    with config_lock:
+        runtime_config.clear()
+        runtime_config.update(validated)
+    logging.info("Updated last known good config: %s", validated)
+    return True
 
 
 def setup_logging() -> None:
@@ -117,6 +233,13 @@ def upload_jpeg(
     if response.status_code != 200:
         logging.error("Upload failed for %s: HTTP %s", filename, response.status_code)
         return False
+    try:
+        body = response.json()
+    except ValueError:
+        logging.error("Upload succeeded but config response was not JSON")
+        return True
+    if not apply_server_config(body.get("config")):
+        logging.error("Upload succeeded but config was not applied")
     return True
 
 
@@ -179,7 +302,7 @@ def pending_cache_files() -> list[Path]:
 
 
 def purge_expired_cache(now: datetime | None = None) -> int:
-    cutoff = (now or datetime.now()) - timedelta(days=CACHE_RETENTION_DAYS)
+    cutoff = (now or datetime.now()) - timedelta(days=current_runtime()["client_cache_days"])
     removed = 0
     for path in pending_cache_files():
         captured_at = filename_captured_at(path.name)
@@ -279,14 +402,18 @@ def handle_capture(server_ip: str, quality: int) -> None:
         del jpeg
 
 
-def run_forever(server_ip: str, interval_seconds: int, quality: int) -> None:
+def run_forever(
+    server_ip: str,
+    interval_override: int | None = None,
+    quality_override: int | None = None,
+) -> None:
     from windows_events import client_state, query_initial_state, start_windows_listener
 
     hostname, username = client_identity()
     query_initial_state()
     start_windows_listener()
     logging.info(
-        "Phase 4 client started. server=%s:%s identity=%s_%s capture=%s",
+        "Phase 5 client started. server=%s:%s identity=%s_%s capture=%s",
         server_ip,
         SERVER_PORT,
         hostname,
@@ -296,6 +423,9 @@ def run_forever(server_ip: str, interval_seconds: int, quality: int) -> None:
     _worker, _stop = start_recovery_worker(server_ip)
     resumed = False
     while True:
+        runtime = current_runtime()
+        interval_seconds = interval_override or runtime["screenshot_interval"]
+        quality = quality_override or runtime["jpeg_quality"]
         if not client_state.capture_enabled:
             client_state.wait_until_enabled()
             resumed = True
@@ -353,6 +483,8 @@ def run_cache_self_test(cache_root: Path) -> None:
     from PIL import Image as PilImage
 
     configure_cache_root(cache_root)
+    configure_client_config_path(cache_root.parent / "client-config.json")
+    load_client_config("127.0.0.1")
     claimed_cache_files.clear()
     jpeg = process_screenshot(PilImage.new("RGB", (1920, 1080), (40, 80, 120)))
     names = [
@@ -628,6 +760,42 @@ def run_session_self_test() -> None:
     logging.info("session self-test passed")
 
 
+def run_config_self_test(config_dir: Path) -> None:
+    configure_client_config_path(config_dir / "config.json")
+    first = load_client_config("10.0.0.8")
+    if first["screenshot_interval"] != 20 or first["jpeg_quality"] != 40 or first["server_ip"] != "10.0.0.8":
+        raise AssertionError(f"first startup config mismatch: {first}")
+    reloaded = load_client_config()
+    if reloaded != first:
+        raise AssertionError("saved config did not reload")
+    active_client_config_path.write_text("{bad", encoding="utf-8")
+    recovered = load_client_config("10.0.0.8")
+    if recovered["jpeg_quality"] != 40:
+        raise AssertionError("corrupt client config did not fall back")
+    if not apply_server_config({"screenshot_interval": 30, "jpeg_quality": 50, "client_cache_days": 5}):
+        raise AssertionError("valid server config was rejected")
+    runtime = current_runtime()
+    if runtime["screenshot_interval"] != 30 or runtime["jpeg_quality"] != 50:
+        raise AssertionError(f"runtime did not sync: {runtime}")
+    if not apply_server_config({"jpeg_quality": 5}):
+        pass
+    else:
+        raise AssertionError("invalid server config was accepted")
+    if current_runtime()["jpeg_quality"] != 50 or current_runtime()["screenshot_interval"] != 30:
+        raise AssertionError("invalid config reset last known good")
+    upload_jpeg("127.0.0.1", "host", "user", "20261003_162000_37.jpg", b"jpeg", port=55551)
+    if current_runtime()["screenshot_interval"] != 30 or current_runtime()["jpeg_quality"] != 50:
+        raise AssertionError("server unavailable reset last known good")
+    if active_client_config_path.with_name("config.json.tmp").exists():
+        raise AssertionError("atomic config write left a temporary file")
+    source = Image.new("RGB", (1920, 1080), (20, 140, 220))
+    parsed = Image.open(io.BytesIO(process_screenshot(source)))
+    parsed.load()
+    if parsed.size != (1920, 1080) or parsed.mode != "L":
+        raise AssertionError("resolution regression")
+    logging.info("config self-test passed")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase 3 screenshot client")
     parser.add_argument("--server-ip", default="127.0.0.1")
@@ -637,9 +805,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--session-self-test", action="store_true")
     parser.add_argument("--windows-api-self-test", action="store_true")
     parser.add_argument("--windows-manual-tests", action="store_true")
+    parser.add_argument("--config-self-test", action="store_true")
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
-    parser.add_argument("--quality", type=int, default=DEFAULT_JPEG_QUALITY)
+    parser.add_argument("--interval", type=int)
+    parser.add_argument("--quality", type=int)
     return parser.parse_args(argv)
 
 
@@ -667,11 +836,18 @@ def main(argv: list[str] | None = None) -> int:
         from windows_events import run_windows_api_self_test
 
         return run_windows_api_self_test()
+    if args.config_self_test:
+        import tempfile
+
+        run_config_self_test(Path(tempfile.mkdtemp(prefix="phase5-client-config-")))
+        return 0
+    load_client_config(args.server_ip)
+    quality = args.quality or current_runtime()["jpeg_quality"]
     if args.test_output is not None:
-        logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, args.quality))
+        logging.info("Test JPEG written: %s", write_test_jpeg(args.test_output, quality))
         return 0
     if args.once:
-        handle_capture(args.server_ip, args.quality)
+        handle_capture(args.server_ip, quality)
         return 0
     run_forever(args.server_ip, args.interval, args.quality)
     return 0
