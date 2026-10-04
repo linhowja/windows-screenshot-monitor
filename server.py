@@ -116,7 +116,7 @@ def load_server_config(path: Path | None = None, storage_override: Path | None =
     raw: object = None
     if path.exists():
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             logging.error("Server config is unreadable; using defaults: %s", exc)
     validated = sanitize_server_config(raw)
@@ -430,6 +430,28 @@ def main(argv: list[str] | None = None) -> int:
         defaulted = load_server_config(untouched)
         if defaulted["storage_root"] != "dev_storage":
             raise AssertionError("omitted storage override did not use config default")
+        custom = {
+            "storage_root": "dev_storage",
+            "screenshot_interval": 30,
+            "jpeg_quality": 50,
+            "client_cache_days": 5,
+            "server_image_retention_days": 14,
+        }
+        plain_path = Path(tempfile.mkdtemp(prefix="phase5-nobom-")) / "server_config.json"
+        plain_path.write_bytes(json.dumps(custom).encode("utf-8"))
+        plain = load_server_config(plain_path)
+        bom_path = Path(tempfile.mkdtemp(prefix="phase5-bom-")) / "server_config.json"
+        bom_path.write_bytes(b"\xef\xbb\xbf" + json.dumps(custom).encode("utf-8"))
+        bom = load_server_config(bom_path)
+        for loaded in (plain, bom):
+            if (
+                loaded["screenshot_interval"] != 30
+                or loaded["jpeg_quality"] != 50
+                or loaded["client_cache_days"] != 5
+            ):
+                raise AssertionError(f"UTF-8 config was reset to defaults: {loaded}")
+        if not bom_path.read_bytes().startswith(b"{") or bom_path.read_bytes().startswith(b"\xef\xbb\xbf"):
+            raise AssertionError("server config save started writing a BOM")
         run_self_test(storage_root)
         return 0
     load_server_config(config_path, storage_override=args.storage_root)
