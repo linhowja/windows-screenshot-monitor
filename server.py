@@ -182,6 +182,7 @@ def find_retention_candidates(storage_root: Path, retention_days: int, now: date
 def save_retention_state(path: Path, last_check_date: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
+    temporary.unlink(missing_ok=True)
     data = json.dumps({"last_check_date": last_check_date}, indent=2).encode("utf-8")
     binary_flag = getattr(os, "O_BINARY", 0)
     fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
@@ -272,7 +273,11 @@ def run_retention_check(
         logging.info("Retention check skipped; already completed today")
         return {"skipped": True, "candidates": 0, "deleted": 0, "failed": 0}
     logging.info("Retention check started")
-    candidates = find_retention_candidates(storage_root, retention_days, now)
+    try:
+        candidates = find_retention_candidates(storage_root, retention_days, now)
+    except Exception as exc:
+        logging.error("Retention check error: %s", exc)
+        return {"skipped": False, "error": True, "candidates": 0, "deleted": 0, "failed": 0}
     logging.info("Retention candidates found: %d", len(candidates))
     deleted = 0
     failed = 0
@@ -576,7 +581,7 @@ def run_retention_self_test() -> None:
     for kept in (exact, young, invalid_name, invalid_date, mismatch, temporary, png, stray):
         if not kept.exists():
             raise AssertionError(f"non-candidate missing before delete: {kept}")
-    state = root.parent / "server_retention_state.json"
+    state = root / "server_retention_state.json"
     result = run_retention_check(root, 14, state, now, decider=lambda *_args: True)
     if result["deleted"] != 1 or old.exists() or not exact.exists() or not stray.exists():
         raise AssertionError(f"candidate deletion mismatch: {result}")
@@ -620,6 +625,25 @@ def run_retention_self_test() -> None:
     short_candidates = {path.name for path in find_retention_candidates(short_root, 3, now)}
     if short_candidates != {four_days.strftime("%Y%m%d_%H%M%S_00.jpg")}:
         raise AssertionError(f"three-day retention mismatch: {short_candidates}")
+    stale = Path(tempfile.mkdtemp(prefix="phase6-stale-tmp-")) / "server_retention_state.json"
+    stale.with_name(stale.name + ".tmp").write_text("partial", encoding="utf-8")
+    save_retention_state(stale, "2026-10-04")
+    if not stale.is_file() or stale.with_name(stale.name + ".tmp").exists():
+        raise AssertionError("stale retention temporary file blocked the next write")
+    protected = write_named("20260901", "20260901_030000_00.jpg")
+    state.unlink(missing_ok=True)
+
+    def broken_scan(*_args, **_kwargs):
+        raise PermissionError("simulated storage scan failure")
+
+    original_scan = find_retention_candidates
+    globals()["find_retention_candidates"] = broken_scan
+    try:
+        failed_scan = run_retention_check(root, 14, state, now, decider=lambda *_args: True)
+    finally:
+        globals()["find_retention_candidates"] = original_scan
+    if failed_scan.get("deleted") != 0 or not protected.exists() or "error" not in failed_scan:
+        raise AssertionError(f"retention scan failure deleted files or crashed: {failed_scan}")
     logging.info("retention self-test passed")
 
 
@@ -687,11 +711,14 @@ def main(argv: list[str] | None = None) -> int:
         run_self_test(storage_root)
         return 0
     loaded = load_server_config(config_path, storage_override=args.storage_root)
-    run_retention_check(
-        STORAGE_ROOT,
-        int(loaded["server_image_retention_days"]),
-        retention_state_path(config_path),
-    )
+    try:
+        run_retention_check(
+            STORAGE_ROOT,
+            int(loaded["server_image_retention_days"]),
+            retention_state_path(config_path),
+        )
+    except Exception as exc:
+        logging.error("Retention check error: %s", exc)
     logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
     serve(app, host=HOST, port=PORT, threads=4)
     return 0
