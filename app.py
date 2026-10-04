@@ -235,6 +235,7 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
 def recovery_worker(server_ip: str, stop: threading.Event) -> None:
     from windows_events import recovery_trigger
 
+    startup = True
     while not stop.is_set():
         try:
             logging.info("Recovery worker awakened")
@@ -243,6 +244,9 @@ def recovery_worker(server_ip: str, stop: threading.Event) -> None:
             logging.exception("Recovery worker failed and will retry: %s", exc)
         if stop.is_set():
             return
+        if startup:
+            recovery_trigger.clear()
+            startup = False
         recovery_trigger.wait(RECOVERY_INTERVAL_SECONDS)
         recovery_trigger.clear()
 
@@ -521,17 +525,35 @@ def run_session_self_test() -> None:
 
     state = events.ClientState(enabled=True)
     events.recovery_trigger.clear()
+    events.desktop_ready_probe = lambda: True
     state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
     if state.capture_enabled:
         raise AssertionError("lock did not disable capture")
+    events.recovery_trigger.clear()
+    state.apply_session(events.WTS_SESSION_UNLOCK, 1, 1)
+    if not state.capture_enabled or not events.recovery_trigger.is_set():
+        raise AssertionError("unlock did not enable capture and trigger recovery")
+
+    events.recovery_trigger.clear()
+    state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
+    attempts = {"count": 0}
+
+    def delayed_ready() -> bool:
+        attempts["count"] += 1
+        return attempts["count"] >= 3
+
+    events.desktop_ready_probe = delayed_ready
+    events.READINESS_DELAY_SECONDS = 0.05
     state.apply_session(events.WTS_SESSION_UNLOCK, 1, 1)
     if state.capture_enabled:
-        raise AssertionError("unlock enabled capture before desktop ready")
-    if events.recovery_trigger.is_set():
-        raise AssertionError("unlock triggered recovery before desktop ready")
-    state.apply_session(events.WTS_SESSION_DESKTOP_READY, 1, 1)
+        raise AssertionError("unlock enabled capture before readiness confirmation")
+    deadline = time.monotonic() + 2
+    while not state.capture_enabled and time.monotonic() < deadline:
+        time.sleep(0.05)
     if not state.capture_enabled or not events.recovery_trigger.is_set():
-        raise AssertionError("desktop ready did not resume and trigger recovery")
+        raise AssertionError("delayed desktop readiness did not recover")
+    events.desktop_ready_probe = lambda: True
+    events.READINESS_DELAY_SECONDS = 0.3
 
     events.recovery_trigger.clear()
     state.apply_power(events.PBT_APMSUSPEND)
@@ -553,6 +575,30 @@ def run_session_self_test() -> None:
     if state.logged_on:
         raise AssertionError("another session logon changed this client")
 
+    startup = events.ClientState(enabled=False)
+    events.recovery_trigger.clear()
+    startup.set_initial(True, True, True, True)
+    if events.recovery_trigger.is_set():
+        raise AssertionError("startup state armed a second recovery trigger")
+    runs = {"count": 0}
+    original_recover = recover_cache
+
+    def counting_recover(server_ip: str = "127.0.0.1") -> int:
+        runs["count"] += 1
+        return 0
+
+    globals()["recover_cache"] = counting_recover
+    stop = threading.Event()
+    worker = threading.Thread(target=recovery_worker, args=("127.0.0.1", stop), name="cache-recovery")
+    worker.start()
+    time.sleep(0.4)
+    if runs["count"] != 1:
+        raise AssertionError(f"startup recovery ran {runs['count']} times")
+    stop.set()
+    events.recovery_trigger.set()
+    worker.join(2)
+    globals()["recover_cache"] = original_recover
+
     workers_before = [thread.name for thread in threading.enumerate()].count("cache-recovery")
     stop = threading.Event()
     events.recovery_trigger.set()
@@ -561,12 +607,13 @@ def run_session_self_test() -> None:
     time.sleep(0.2)
     for _ in range(4):
         state.apply_session(events.WTS_SESSION_LOCK, 1, 1)
-        state.apply_session(events.WTS_SESSION_DESKTOP_READY, 1, 1)
+        state.apply_session(events.WTS_SESSION_UNLOCK, 1, 1)
     time.sleep(0.2)
     workers_after = [thread.name for thread in threading.enumerate()].count("cache-recovery")
     stop.set()
     events.recovery_trigger.set()
     worker.join(2)
+    events.desktop_ready_probe = None
     if workers_after != workers_before + 1:
         raise AssertionError(f"recovery workers duplicated: {workers_before} {workers_after}")
     logging.info("session self-test passed")
