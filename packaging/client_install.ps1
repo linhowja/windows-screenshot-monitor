@@ -6,12 +6,18 @@ param(
 $ErrorActionPreference = "Stop"
 $programData = "C:\ProgramData\ScreenshotClient"
 $configPath = Join-Path $programData "config.json"
+$cachePath = Join-Path $programData "Cache"
+$logsPath = Join-Path $programData "Logs"
 $manifestPath = Join-Path $programData "install_manifest.json"
 $taskName = "Screenshot Client"
 $exe = Join-Path $InstallPath "ScreenshotClient.exe"
 
-New-Item -ItemType Directory -Force -Path $programData, (Join-Path $programData "Cache"), (Join-Path $programData "Logs") | Out-Null
+$programDataExisted = Test-Path $programData
 $configExisted = Test-Path $configPath
+$cacheExisted = Test-Path $cachePath
+$logsExisted = Test-Path $logsPath
+
+New-Item -ItemType Directory -Force -Path $programData, $cachePath, $logsPath | Out-Null
 if (-not $configExisted) {
     $config = @{
         server_ip = $ServerIp
@@ -23,6 +29,8 @@ if (-not $configExisted) {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
 }
+
+icacls $programData /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)M" | Out-Null
 
 $taskXml = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -39,8 +47,6 @@ $taskXml = @"
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author"><Exec><Command>$exe</Command></Exec></Actions>
@@ -54,8 +60,12 @@ $manifest = @{
     program_install_path = $InstallPath
     programdata_path = $programData
     task_scheduler_task_name = $taskName
-    path_created_by_installer = @($programData, (Join-Path $programData "Cache"), (Join-Path $programData "Logs"))
-    path_existed_before_install = @{ $programData = $configExisted }
+    programdata_existed_before_install = $programDataExisted
+    config_existed_before_install = $configExisted
+    cache_existed_before_install = $cacheExisted
+    logs_existed_before_install = $logsExisted
+    path_created_by_installer = @($programData, $cachePath, $logsPath)
 }
-$manifest | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding utf8
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json), $utf8)
 Write-Output "Client install manifest written: $manifestPath"

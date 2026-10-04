@@ -11,9 +11,6 @@ Source: "..\dist\ScreenshotClient.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
-[Tasks]
-Name: "deletedata"; Description: "Delete application data"; Flags: unchecked
-
 [Code]
 var
   ServerIpPage: TInputQueryWizardPage;
@@ -30,9 +27,19 @@ begin
   Result := ServerIpPage.Values[0];
 end;
 
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+  Params: String;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    Params := '-ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\client_uninstall.ps1') + '"';
+    if MsgBox('Delete application data?' + #13#10 + #13#10 + 'This will delete Screenshot Monitor application data.' + #13#10 + 'This action cannot be undone.', mbConfirmation, MB_YESNO) = IDYES then
+      Params := Params + ' -DeleteApplicationData';
+    Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
 [Run]
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\client_install.ps1"" -ServerIp ""{code:ServerIp}"" -InstallPath ""{app}"""; Flags: runhidden
-
-[UninstallRun]
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\client_uninstall.ps1"""; Flags: runhidden; Tasks: not deletedata
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\client_uninstall.ps1"" -DeleteApplicationData"; Flags: runhidden; Tasks: deletedata

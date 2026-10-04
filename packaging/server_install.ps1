@@ -6,16 +6,25 @@ param(
 $ErrorActionPreference = "Stop"
 $programData = "C:\ProgramData\ScreenshotServer"
 $configPath = Join-Path $programData "server_config.json"
+$logsPath = Join-Path $programData "Logs"
 $manifestPath = Join-Path $programData "install_manifest.json"
 $taskName = "Screenshot Server"
 $exe = Join-Path $InstallPath "ScreenshotServer.exe"
+$markerPath = Join-Path $StorageRoot ".screenshot-monitor-owned.json"
+
+$programDataExisted = Test-Path $programData
+$configExisted = Test-Path $configPath
+$logsExisted = Test-Path $logsPath
 $storageExisted = Test-Path $StorageRoot
 
-New-Item -ItemType Directory -Force -Path $programData, (Join-Path $programData "Logs") | Out-Null
+New-Item -ItemType Directory -Force -Path $programData, $logsPath | Out-Null
 if (-not $storageExisted) {
     New-Item -ItemType Directory -Force -Path $StorageRoot | Out-Null
+    $marker = @{ owner = "Windows Screenshot Monitor"; created_by = "server_installer" }
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($markerPath, ($marker | ConvertTo-Json), $utf8)
 }
-if (-not (Test-Path $configPath)) {
+if (-not $configExisted) {
     $config = @{
         storage_root = $StorageRoot
         screenshot_interval = 20
@@ -26,6 +35,9 @@ if (-not (Test-Path $configPath)) {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
 }
+
+icacls $programData /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)M" | Out-Null
+icacls $StorageRoot /grant:r "Users:(OI)(CI)M" | Out-Null
 
 $existingRule = Get-NetFirewallRule -DisplayName "Screenshot Server" -ErrorAction SilentlyContinue
 if (-not $existingRule) {
@@ -62,8 +74,13 @@ $manifest = @{
     task_scheduler_task_name = $taskName
     firewall_rule_name = "Screenshot Server"
     storage_root = $StorageRoot
-    path_created_by_installer = @($programData, (Join-Path $programData "Logs"))
-    path_existed_before_install = @{ $StorageRoot = $storageExisted }
+    programdata_existed_before_install = $programDataExisted
+    config_existed_before_install = $configExisted
+    logs_existed_before_install = $logsExisted
+    storage_root_existed_before_install = $storageExisted
+    ownership_marker = ".screenshot-monitor-owned.json"
+    path_created_by_installer = @($programData, $logsPath)
 }
-$manifest | ConvertTo-Json | Set-Content -Path $manifestPath -Encoding utf8
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json), $utf8)
 Write-Output "Server install manifest written: $manifestPath"
