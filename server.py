@@ -112,7 +112,8 @@ def write_all(fd: int, payload: bytes) -> None:
 
 def write_exclusive(destination: Path, payload: bytes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    binary_flag = getattr(os, "O_BINARY", 0)
+    fd = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
     try:
         write_all(fd, payload)
     except Exception:
@@ -246,6 +247,8 @@ def run_self_test(storage_root: Path) -> None:
         stored = storage_root / "LIN-PC01_child" / "20261003" / filename
         if not stored.is_file() or stored.read_bytes() != jpeg:
             raise AssertionError(f"stored file mismatch: {stored}")
+        if stored.stat().st_size != len(jpeg) or jpeg.count(b"\n") != stored.read_bytes().count(b"\n"):
+            raise AssertionError("stored JPEG bytes were translated")
         if stored.stat().st_size != len(jpeg):
             raise AssertionError("stored size does not match payload")
 
