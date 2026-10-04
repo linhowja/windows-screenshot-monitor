@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -136,6 +136,160 @@ def client_config_payload() -> dict:
             "jpeg_quality": server_config["jpeg_quality"],
             "client_cache_days": server_config["client_cache_days"],
         }
+
+
+def retention_state_path(config_path: Path | None = None) -> Path:
+    return (config_path or CONFIG_PATH).with_name("server_retention_state.json")
+
+
+def capture_timestamp(filename: str) -> datetime | None:
+    match = FILENAME_RE.fullmatch(filename)
+    if not match:
+        return None
+    day, clock, centisecond = match.groups()
+    try:
+        captured = datetime.strptime(day + clock, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return captured.replace(microsecond=int(centisecond) * 10_000)
+
+
+def find_retention_candidates(storage_root: Path, retention_days: int, now: datetime) -> list[Path]:
+    cutoff = now - timedelta(days=retention_days)
+    root = storage_root.resolve()
+    candidates: list[Path] = []
+    if not root.is_dir():
+        return candidates
+    for identity in root.iterdir():
+        if not identity.is_dir():
+            continue
+        for day_dir in identity.iterdir():
+            if not day_dir.is_dir() or not re.fullmatch(r"\d{8}", day_dir.name):
+                continue
+            for path in day_dir.iterdir():
+                if not path.is_file() or path.suffix.lower() != ".jpg":
+                    continue
+                captured = capture_timestamp(path.name)
+                if captured is None or path.name[:8] != day_dir.name or captured >= cutoff:
+                    continue
+                resolved = path.resolve()
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    continue
+                candidates.append(path)
+    return candidates
+
+
+def save_retention_state(path: Path, last_check_date: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    data = json.dumps({"last_check_date": last_check_date}, indent=2).encode("utf-8")
+    binary_flag = getattr(os, "O_BINARY", 0)
+    fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
+    try:
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                raise OSError("incomplete retention state write")
+            offset += written
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    os.replace(temporary, path)
+
+
+def read_retention_state(path: Path) -> str | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("last_check_date")
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return value
+
+
+def windows_confirm_delete(count: int, retention_days: int, storage_root: Path) -> bool:
+    if not sys.platform.startswith("win"):
+        logging.error("Retention confirmation requires Windows; keeping files")
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+    user32.MessageBoxW.restype = ctypes.c_int
+    question = (
+        f"發現 {count} 張超過 {retention_days} 天的圖片。\n"
+        f"Storage Root:\n{storage_root}\n"
+        "是否刪除這些圖片？"
+    )
+    answer = user32.MessageBoxW(None, question, "Screenshot Server Retention", 0x00000004 | 0x00000020 | 0x00000100)
+    if answer != 6:
+        user32.MessageBoxW(
+            None,
+            "圖片未刪除。\n如果需要保留，請自行將這些圖片移動到其他資料夾。\n今天不會再次詢問。",
+            "Screenshot Server Retention",
+            0x00000040,
+        )
+        return False
+    return True
+
+
+def delete_candidates(candidates: list[Path]) -> tuple[int, int]:
+    deleted = 0
+    failed = 0
+    for path in candidates:
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError as exc:
+            failed += 1
+            logging.error("Retention delete failed: %s (%s)", path, exc)
+    return deleted, failed
+
+
+def run_retention_check(
+    storage_root: Path,
+    retention_days: int,
+    state_path: Path,
+    now: datetime | None = None,
+    decider=None,
+) -> dict:
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    if read_retention_state(state_path) == today:
+        logging.info("Retention check skipped; already completed today")
+        return {"skipped": True, "candidates": 0, "deleted": 0, "failed": 0}
+    logging.info("Retention check started")
+    candidates = find_retention_candidates(storage_root, retention_days, now)
+    logging.info("Retention candidates found: %d", len(candidates))
+    deleted = 0
+    failed = 0
+    if candidates:
+        delete = False
+        try:
+            delete = (decider or windows_confirm_delete)(len(candidates), retention_days, storage_root)
+        except Exception as exc:
+            logging.error("Retention confirmation failed; keeping files: %s", exc)
+        logging.info("User selected %s", "DELETE" if delete else "KEEP")
+        if delete:
+            deleted, failed = delete_candidates(candidates)
+    save_retention_state(state_path, today)
+    logging.info("Deleted: %d", deleted)
+    logging.info("Delete failed: %d", failed)
+    logging.info("Retention check completed")
+    return {"skipped": False, "candidates": len(candidates), "deleted": deleted, "failed": failed}
 
 
 def safe_identity_part(value: str, field: str) -> str:
@@ -392,6 +546,83 @@ def run_self_test(storage_root: Path) -> None:
         server.close()
 
 
+def run_retention_self_test() -> None:
+    import tempfile
+
+    now = datetime(2026, 10, 4, 12, 0, 0)
+    root = Path(tempfile.mkdtemp(prefix="phase6-retention-"))
+    identity = root / "LIN-PC01_child"
+
+    def write_named(folder: str, name: str, payload: bytes = b"jpg") -> Path:
+        destination = identity / folder
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / name
+        path.write_bytes(payload)
+        return path
+
+    old = write_named("20260919", "20260919_115959_00.jpg")
+    exact = write_named("20260920", "20260920_120000_00.jpg")
+    young = write_named("20260921", "20260921_120000_00.jpg")
+    invalid_name = write_named("20260920", "bad.jpg")
+    invalid_date = write_named("20260231", "20260231_120000_00.jpg")
+    mismatch = write_named("20260920", "20260919_120000_00.jpg")
+    temporary = write_named("20260920", "20260920_120000_00.jpg.tmp")
+    png = write_named("20260920", "20260920_120000_00.png")
+    stray = root / "notes.txt"
+    stray.write_text("keep", encoding="utf-8")
+    candidates = {path.name for path in find_retention_candidates(root, 14, now)}
+    if candidates != {old.name}:
+        raise AssertionError(f"retention candidates mismatch: {candidates}")
+    for kept in (exact, young, invalid_name, invalid_date, mismatch, temporary, png, stray):
+        if not kept.exists():
+            raise AssertionError(f"non-candidate missing before delete: {kept}")
+    state = root.parent / "server_retention_state.json"
+    result = run_retention_check(root, 14, state, now, decider=lambda *_args: True)
+    if result["deleted"] != 1 or old.exists() or not exact.exists() or not stray.exists():
+        raise AssertionError(f"candidate deletion mismatch: {result}")
+    second = run_retention_check(root, 14, state, now, decider=lambda *_args: True)
+    if not second["skipped"]:
+        raise AssertionError("same-day retention check ran again")
+    save_retention_state(state, "2026-10-03")
+    third = run_retention_check(root, 14, state, now, decider=lambda *_args: False)
+    if third["skipped"]:
+        raise AssertionError("yesterday state blocked today's check")
+    state.write_text("{bad", encoding="utf-8")
+    fourth = run_retention_check(root, 14, state, now, decider=lambda *_args: False)
+    if fourth["skipped"]:
+        raise AssertionError("corrupt state was treated as already checked")
+    failing = write_named("20260901", "20260901_010000_00.jpg")
+    other = write_named("20260901", "20260901_020000_00.jpg")
+    state.unlink()
+    original_unlink = Path.unlink
+
+    def failing_unlink(path: Path, *args, **kwargs):
+        if path == failing:
+            raise OSError("simulated delete failure")
+        return original_unlink(path, *args, **kwargs)
+
+    Path.unlink = failing_unlink
+    try:
+        failed = run_retention_check(root, 14, state, now, decider=lambda *_args: True)
+    finally:
+        Path.unlink = original_unlink
+    if failed["failed"] != 1 or not failing.exists() or other.exists():
+        raise AssertionError(f"partial delete failure mismatch: {failed}")
+    short_root = Path(tempfile.mkdtemp(prefix="phase6-short-"))
+    four_days = now - timedelta(days=4)
+    two_days = now - timedelta(days=2)
+    old_short = short_root / "LIN-PC01_child" / four_days.strftime("%Y%m%d")
+    old_short.mkdir(parents=True)
+    (old_short / four_days.strftime("%Y%m%d_%H%M%S_00.jpg")).write_bytes(b"old")
+    new_short = short_root / "LIN-PC01_child" / two_days.strftime("%Y%m%d")
+    new_short.mkdir(parents=True)
+    (new_short / two_days.strftime("%Y%m%d_%H%M%S_00.jpg")).write_bytes(b"new")
+    short_candidates = {path.name for path in find_retention_candidates(short_root, 3, now)}
+    if short_candidates != {four_days.strftime("%Y%m%d_%H%M%S_00.jpg")}:
+        raise AssertionError(f"three-day retention mismatch: {short_candidates}")
+    logging.info("retention self-test passed")
+
+
 def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = parse_args(argv)
@@ -452,9 +683,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise AssertionError(f"UTF-8 config was reset to defaults: {loaded}")
         if not bom_path.read_bytes().startswith(b"{") or bom_path.read_bytes().startswith(b"\xef\xbb\xbf"):
             raise AssertionError("server config save started writing a BOM")
+        run_retention_self_test()
         run_self_test(storage_root)
         return 0
-    load_server_config(config_path, storage_override=args.storage_root)
+    loaded = load_server_config(config_path, storage_override=args.storage_root)
+    run_retention_check(
+        STORAGE_ROOT,
+        int(loaded["server_image_retention_days"]),
+        retention_state_path(config_path),
+    )
     logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
     serve(app, host=HOST, port=PORT, threads=4)
     return 0
