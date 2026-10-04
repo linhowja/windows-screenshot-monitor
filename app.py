@@ -44,11 +44,6 @@ def setup_logging() -> None:
     )
 
 
-def scaled_size(width: int, height: int) -> tuple[int, int]:
-    """Scale each axis to 25 percent. 1920x1080 becomes 480x270."""
-    return (max(1, round(width * 0.25)), max(1, round(height * 0.25)))
-
-
 def make_filename(captured_at: datetime) -> str:
     """YYYYMMDD_HHMMSS_CC.jpg, where CC is the centisecond, not a sequence."""
     centisecond = captured_at.microsecond // 10_000
@@ -63,12 +58,11 @@ def filename_captured_at(filename: str) -> datetime | None:
 
 
 def process_screenshot(image: Image.Image, quality: int = DEFAULT_JPEG_QUALITY) -> bytes:
-    """Resize each axis to 25 percent, convert to 8-bit grayscale, encode JPEG."""
+    """Keep the captured size, convert to 8-bit grayscale, and encode JPEG."""
     if not 20 <= quality <= 100:
         raise ValueError(f"JPEG quality must be 20-100, got {quality}")
 
-    resized = image.resize(scaled_size(image.width, image.height), Image.Resampling.LANCZOS)
-    grayscale = resized.convert("L")
+    grayscale = image.convert("L")
     buffer = io.BytesIO()
     grayscale.save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
@@ -328,12 +322,12 @@ def run_self_test() -> None:
     filename = make_filename(datetime(2026, 10, 3, 16, 20, 0, 370000))
     if filename != "20261003_162000_37.jpg":
         raise AssertionError(filename)
-    if not re.fullmatch(FILENAME_RE, filename) or scaled_size(1920, 1080) != (480, 270):
-        raise AssertionError("phase 1 pipeline mismatch")
+    if not re.fullmatch(FILENAME_RE, filename):
+        raise AssertionError("filename mismatch")
     jpeg = process_screenshot(source)
     parsed = Image.open(io.BytesIO(jpeg))
     parsed.load()
-    if parsed.format != "JPEG" or parsed.mode != "L" or parsed.size != (480, 270):
+    if parsed.format != "JPEG" or parsed.mode != "L" or parsed.size != (1920, 1080):
         raise AssertionError("phase 1 output mismatch")
     import tempfile
 
@@ -346,9 +340,9 @@ def run_self_test() -> None:
         raise AssertionError("cache JPEG bytes diverged from payload")
     reopened = Image.open(io.BytesIO(cached))
     reopened.load()
-    if reopened.format != "JPEG" or reopened.mode != "L":
-        raise AssertionError("cached JPEG could not be reopened")
-    logging.info("client self-test passed: %s 480x270 mode=L cache-bytes-match", filename)
+    if reopened.format != "JPEG" or reopened.mode != "L" or reopened.size != (1920, 1080):
+        raise AssertionError("cached JPEG could not be reopened at original size")
+    logging.info("client self-test passed: %s 1920x1080 mode=L cache-bytes-match", filename)
 
 
 def run_cache_self_test(cache_root: Path) -> None:
