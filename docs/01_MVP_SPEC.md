@@ -402,7 +402,7 @@ Server 發現相同 Client identity + date + filename 已存在時，可以直�
 
 Client 初次啟動至少知道：
 
-- Server IPv4，可由 `--server-ip` 提供
+- Server IPv4。未指定 `--server-ip` 時使用 Last Known Good；只有明確指定才覆寫。第一次沒有 LKG 才用 127.0.0.1
 - Server Port = 55550
 
 Windows 正式 Last Known Good 檔案：
