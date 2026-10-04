@@ -11,21 +11,54 @@ $logPath = Join-Path $env:TEMP "ScreenshotServer-uninstall.log"
 function Write-UninstallLog([string]$Message) {
     Add-Content -Path $logPath -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message)
 }
+function Test-ValidDate([string]$Value) {
+    $parsed = [datetime]::MinValue
+    return [datetime]::TryParseExact($Value, "yyyyMMdd", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsed)
+}
+function Test-ScreenshotFile([string]$Name, [string]$Day) {
+    if ($Name -notmatch '^\d{8}_\d{6}_\d{2}\.jpg$') { return $false }
+    if ($Name.Substring(0, 8) -ne $Day) { return $false }
+    $parsed = [datetime]::MinValue
+    return [datetime]::TryParseExact($Name.Substring(0, 15), "yyyyMMdd_HHmmss", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsed)
+}
+function Test-ReparsePoint([System.IO.FileSystemInfo]$Item) {
+    return (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
 function Test-OwnedStorage([string]$Root) {
-    $marker = Join-Path $Root ".screenshot-monitor-owned.json"
-    if (-not (Test-Path $marker)) { return $false }
-    $allowedName = '^\d{8}_\d{6}_\d{2}\.jpg$'
-    foreach ($item in Get-ChildItem -LiteralPath $Root -Force -Recurse) {
-        if ($item.FullName -eq $marker) { continue }
-        if ($item.PSIsContainer) {
-            if ($item.FullName.Substring($Root.Length).TrimStart('\') -match '^[^\\]+(\\\d{8})?$') { continue }
-            Write-UninstallLog "Unrecognized directory retained: $($item.FullName)"
+    $markerName = ".screenshot-monitor-owned.json"
+    $marker = Join-Path $Root $markerName
+    if (-not (Test-Path -LiteralPath $marker)) { return $false }
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (Test-ReparsePoint $rootItem) {
+        Write-UninstallLog "Storage root is a reparse point; retained: $Root"
+        return $false
+    }
+    foreach ($identity in Get-ChildItem -LiteralPath $Root -Force) {
+        if ($identity.Name -eq $markerName -and -not $identity.PSIsContainer) { continue }
+        if (Test-ReparsePoint $identity) {
+            Write-UninstallLog "Reparse point found; storage root retained: $($identity.FullName)"
             return $false
         }
-        $relative = $item.FullName.Substring($Root.Length).TrimStart('\')
-        if ($relative -match '^[^\\]+\\\d{8}\\[^\\]+$' -and $item.Name -match $allowedName) { continue }
-        Write-UninstallLog "Unrecognized file retained storage root: $($item.FullName)"
-        return $false
+        if (-not $identity.PSIsContainer) {
+            Write-UninstallLog "Unrecognized file; storage root retained: $($identity.FullName)"
+            return $false
+        }
+        foreach ($day in Get-ChildItem -LiteralPath $identity.FullName -Force) {
+            if (Test-ReparsePoint $day) {
+                Write-UninstallLog "Reparse point found; storage root retained: $($day.FullName)"
+                return $false
+            }
+            if (-not $day.PSIsContainer -or -not (Test-ValidDate $day.Name)) {
+                Write-UninstallLog "Unrecognized item; storage root retained: $($day.FullName)"
+                return $false
+            }
+            foreach ($file in Get-ChildItem -LiteralPath $day.FullName -Force) {
+                if (Test-ReparsePoint $file -or $file.PSIsContainer -or -not (Test-ScreenshotFile $file.Name $day.Name)) {
+                    Write-UninstallLog "Unrecognized or reparse item; storage root retained: $($file.FullName)"
+                    return $false
+                }
+            }
+        }
     }
     return $true
 }
