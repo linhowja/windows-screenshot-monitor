@@ -35,9 +35,7 @@ DEFAULT_SERVER_CONFIG = {
 }
 SERVER_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotServer")
 CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotServer\server_config.json")
-SERVER_LOG_DIR = Path(r"C:\ProgramData\ScreenshotServer\Logs")
-LOG_MAX_BYTES = 1_000_000
-LOG_BACKUP_COUNT = 5
+session_log_handler: logging.Handler | None = None
 
 app = Flask(__name__)
 STORAGE_ROOT = Path("dev_storage")
@@ -45,32 +43,53 @@ server_config = dict(DEFAULT_SERVER_CONFIG)
 config_lock = threading.Lock()
 
 
-def setup_logging(log_dir: Path | None = None) -> None:
+def server_log_dir() -> Path:
+    from app import documents_dir
+
+    return documents_dir() / "ScreenshotServer" / "Logs"
+
+
+def close_logging() -> None:
+    global session_log_handler
+    if session_log_handler is None:
+        return
+    logging.info("Application shutting down")
+    session_log_handler.flush()
+    logging.getLogger().removeHandler(session_log_handler)
+    session_log_handler.close()
+    session_log_handler = None
+
+
+def setup_logging(log_dir: Path | None = None) -> Path | None:
+    global session_log_handler
+    from app import session_log_name
+
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     formatter = logging.Formatter(
         "[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    if not root.handlers:
+    if not any(isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler) for handler in root.handlers):
         stream = logging.StreamHandler(sys.stdout)
         stream.setFormatter(formatter)
         root.addHandler(stream)
-    target = log_dir or SERVER_LOG_DIR
-    if os.name == "nt" or log_dir is not None:
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.handlers.RotatingFileHandler(
-                target / "server.log",
-                maxBytes=LOG_MAX_BYTES,
-                backupCount=LOG_BACKUP_COUNT,
-                encoding="utf-8",
-            )
-            file_handler.setFormatter(formatter)
-            root.addHandler(file_handler)
-        except OSError as exc:
-            print(f"Server file log unavailable: {exc}", file=sys.stderr)
-    logging.info("Server logging started: %s", target)
+    if os.name != "nt" and log_dir is None:
+        logging.info("Server logging started without a session file")
+        return None
+    target = log_dir or server_log_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        log_path = target / session_log_name()
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+        session_log_handler = file_handler
+    except OSError as exc:
+        print(f"Server file log unavailable: {exc}", file=sys.stderr)
+        return None
+    logging.info("Server logging started: %s", log_path)
+    return log_path
 
 
 def configure_storage(storage_root: Path) -> None:
@@ -745,10 +764,22 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:
         logging.error("Retention check error: %s", exc)
+    logging.info(
+        "Server startup config=%s storage=%s interval=%s quality=%s cache_days=%s retention_days=%s",
+        config_path,
+        loaded["storage_root"],
+        loaded["screenshot_interval"],
+        loaded["jpeg_quality"],
+        loaded["client_cache_days"],
+        loaded["server_image_retention_days"],
+    )
     logging.info("Listening on %s:%s storage=%s", HOST, PORT, STORAGE_ROOT)
     serve(app, host=HOST, port=PORT, threads=4)
     return 0
 
 
 if __name__ == "__main__":
+    import atexit
+
+    atexit.register(close_logging)
     raise SystemExit(main())

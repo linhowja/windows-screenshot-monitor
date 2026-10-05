@@ -82,5 +82,5 @@ if ($canDeleteStorage) {
 } elseif ($storageRoot) {
     Write-UninstallLog "Storage root retained because ownership or content could not be proven: $storageRoot"
 }
-Write-UninstallLog "Deleting Server ProgramData: $programData"
+Write-UninstallLog "Deleting Server ProgramData: $programData. Documents logs are retained."
 if (Test-Path $programData) { Remove-Item -Recurse -Force $programData }

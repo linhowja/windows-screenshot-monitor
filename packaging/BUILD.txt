@@ -7,5 +7,9 @@
 #   dist/ScreenshotClient.exe
 #   dist/ScreenshotServer.exe
 # Runtime files are not stored beside the executable.
-# Client uses C:\ProgramData\ScreenshotClient.
-# Server uses C:\ProgramData\ScreenshotServer.
+# Client config and cache use C:\ProgramData\ScreenshotClient.
+# Server config uses C:\ProgramData\ScreenshotServer.
+# Logs are created on first launch under the current user's Documents folder:
+#   Documents\ScreenshotClient\Logs\YYYYMMDD_HHMMSS_CC.LOG
+#   Documents\ScreenshotServer\Logs\YYYYMMDD_HHMMSS_CC.LOG
+# Installers do not create ProgramData\Logs, and uninstall does not delete Documents logs.

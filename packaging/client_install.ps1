@@ -7,7 +7,6 @@ $ErrorActionPreference = "Stop"
 $programData = "C:\ProgramData\ScreenshotClient"
 $configPath = Join-Path $programData "config.json"
 $cachePath = Join-Path $programData "Cache"
-$logsPath = Join-Path $programData "Logs"
 $manifestPath = Join-Path $programData "install_manifest.json"
 $taskName = "Screenshot Client"
 $exe = Join-Path $InstallPath "ScreenshotClient.exe"
@@ -15,9 +14,8 @@ $exe = Join-Path $InstallPath "ScreenshotClient.exe"
 $programDataExisted = Test-Path $programData
 $configExisted = Test-Path $configPath
 $cacheExisted = Test-Path $cachePath
-$logsExisted = Test-Path $logsPath
 
-New-Item -ItemType Directory -Force -Path $programData, $cachePath, $logsPath | Out-Null
+New-Item -ItemType Directory -Force -Path $programData, $cachePath | Out-Null
 if (-not $configExisted) {
     $config = @{
         server_ip = $ServerIp
@@ -63,8 +61,7 @@ $manifest = @{
     programdata_existed_before_install = $programDataExisted
     config_existed_before_install = $configExisted
     cache_existed_before_install = $cacheExisted
-    logs_existed_before_install = $logsExisted
-    path_created_by_installer = @($programData, $cachePath, $logsPath)
+    path_created_by_installer = @($programData, $cachePath)
 }
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json), $utf8)

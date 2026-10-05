@@ -6,7 +6,6 @@ param(
 $ErrorActionPreference = "Stop"
 $programData = "C:\ProgramData\ScreenshotServer"
 $configPath = Join-Path $programData "server_config.json"
-$logsPath = Join-Path $programData "Logs"
 $manifestPath = Join-Path $programData "install_manifest.json"
 $taskName = "Screenshot Server"
 $exe = Join-Path $InstallPath "ScreenshotServer.exe"
@@ -14,10 +13,9 @@ $markerPath = Join-Path $StorageRoot ".screenshot-monitor-owned.json"
 
 $programDataExisted = Test-Path $programData
 $configExisted = Test-Path $configPath
-$logsExisted = Test-Path $logsPath
 $storageExisted = Test-Path $StorageRoot
 
-New-Item -ItemType Directory -Force -Path $programData, $logsPath | Out-Null
+New-Item -ItemType Directory -Force -Path $programData | Out-Null
 if (-not $storageExisted) {
     New-Item -ItemType Directory -Force -Path $StorageRoot | Out-Null
     $marker = @{ owner = "Windows Screenshot Monitor"; created_by = "server_installer" }
@@ -76,10 +74,9 @@ $manifest = @{
     storage_root = $StorageRoot
     programdata_existed_before_install = $programDataExisted
     config_existed_before_install = $configExisted
-    logs_existed_before_install = $logsExisted
     storage_root_existed_before_install = $storageExisted
     ownership_marker = ".screenshot-monitor-owned.json"
-    path_created_by_installer = @($programData, $logsPath)
+    path_created_by_installer = @($programData)
 }
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json), $utf8)

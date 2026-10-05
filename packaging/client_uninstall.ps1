@@ -17,6 +17,6 @@ if (-not $DeleteApplicationData) {
     Write-UninstallLog "User kept application data: $programData"
     return
 }
-Write-UninstallLog "User confirmed deletion of Client ProgramData."
+Write-UninstallLog "User confirmed deletion of Client ProgramData. Documents logs are retained."
 if (Test-Path $programData) { Remove-Item -Recurse -Force $programData }
 Write-UninstallLog "Client ProgramData delete attempted."

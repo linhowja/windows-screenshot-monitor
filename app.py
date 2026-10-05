@@ -32,9 +32,7 @@ RECOVERY_INTERVAL_SECONDS = 300
 CACHE_ROOT = Path(r"C:\ProgramData\ScreenshotClient\Cache")
 CLIENT_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotClient")
 CLIENT_CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotClient\config.json")
-CLIENT_LOG_DIR = Path(r"C:\ProgramData\ScreenshotClient\Logs")
-LOG_MAX_BYTES = 1_000_000
-LOG_BACKUP_COUNT = 5
+session_log_handler: logging.Handler | None = None
 DEFAULT_CLIENT_CONFIG = {
     "server_ip": "127.0.0.1",
     "server_port": SERVER_PORT,
@@ -169,7 +167,63 @@ def apply_server_config(raw: object) -> bool:
     return True
 
 
-def setup_logging(log_dir: Path | None = None) -> None:
+def documents_dir() -> Path:
+    """Current user's Documents folder, including redirected Known Folders."""
+    if os.name != "nt":
+        return Path.home() / "Documents"
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_ulong),
+            ("Data2", ctypes.c_ushort),
+            ("Data3", ctypes.c_ushort),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    folder_id = GUID(0xFDD39AD0, 0x238F, 0x46AF, (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(GUID),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_wchar_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    path_ptr = ctypes.c_wchar_p()
+    if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(path_ptr)) != 0 or not path_ptr.value:
+        raise OSError("Documents folder unavailable")
+    value = path_ptr.value
+    ole32.CoTaskMemFree(path_ptr)
+    return Path(value)
+
+
+def session_log_name(started_at: datetime | None = None) -> str:
+    started_at = started_at or datetime.now()
+    centisecond = started_at.microsecond // 10_000
+    return started_at.strftime("%Y%m%d_%H%M%S_") + f"{centisecond:02d}.LOG"
+
+
+def client_log_dir() -> Path:
+    return documents_dir() / "ScreenshotClient" / "Logs"
+
+
+def close_logging() -> None:
+    global session_log_handler
+    if session_log_handler is None:
+        return
+    logging.info("Application shutting down")
+    session_log_handler.flush()
+    logging.getLogger().removeHandler(session_log_handler)
+    session_log_handler.close()
+    session_log_handler = None
+
+
+def setup_logging(log_dir: Path | None = None) -> Path | None:
+    global session_log_handler
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     formatter = logging.Formatter(
@@ -180,21 +234,22 @@ def setup_logging(log_dir: Path | None = None) -> None:
         stream = logging.StreamHandler(sys.stdout)
         stream.setFormatter(formatter)
         root.addHandler(stream)
-    target = log_dir or CLIENT_LOG_DIR
-    if os.name == "nt" or log_dir is not None:
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.handlers.RotatingFileHandler(
-                target / "client.log",
-                maxBytes=LOG_MAX_BYTES,
-                backupCount=LOG_BACKUP_COUNT,
-                encoding="utf-8",
-            )
-            file_handler.setFormatter(formatter)
-            root.addHandler(file_handler)
-        except OSError as exc:
-            print(f"Client file log unavailable: {exc}", file=sys.stderr)
-    logging.info("Client logging started: %s", target)
+    if os.name != "nt" and log_dir is None:
+        logging.info("Client logging started without a session file")
+        return None
+    target = log_dir or client_log_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        log_path = target / session_log_name()
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+        session_log_handler = file_handler
+    except OSError as exc:
+        print(f"Client file log unavailable: {exc}", file=sys.stderr)
+        return None
+    logging.info("Client logging started: %s", log_path)
+    return log_path
 
 
 def make_filename(captured_at: datetime) -> str:
@@ -244,7 +299,10 @@ def client_identity() -> tuple[str, str]:
 def capture_jpeg(quality: int = DEFAULT_JPEG_QUALITY) -> tuple[str, bytes, datetime]:
     image = capture_primary_monitor()
     captured_at = datetime.now()
-    return make_filename(captured_at), process_screenshot(image, quality), captured_at
+    logging.info("Captured primary monitor %sx%s", image.width, image.height)
+    jpeg = process_screenshot(image, quality)
+    logging.info("JPEG encoded %s bytes quality=%s", len(jpeg), quality)
+    return make_filename(captured_at), jpeg, captured_at
 
 
 def upload_jpeg(
@@ -431,7 +489,7 @@ def handle_capture(server_ip: str, quality: int) -> None:
     filename, jpeg, _captured_at = capture_jpeg(quality)
     try:
         if upload_jpeg(server_ip, hostname, username, filename, jpeg):
-            logging.info("Uploaded %s (%d bytes); discarded", filename, len(jpeg))
+            logging.info("Uploaded %s (%d bytes) HTTP 200; discarded", filename, len(jpeg))
         else:
             logging.error("Upload failed for %s", filename)
             cache_jpeg(filename, jpeg)
@@ -447,13 +505,17 @@ def run_forever() -> None:
     start_windows_listener()
     initial = effective_runtime()
     logging.info(
-        "Phase 5 client started. server=%s:%s interval=%s quality=%s identity=%s_%s capture=%s",
+        "Client startup hostname=%s username=%s config=%s cache=%s server=%s:%s interval=%s quality=%s cli_interval=%s cli_quality=%s capture=%s",
+        hostname,
+        username,
+        active_client_config_path,
+        active_cache_root,
         initial["server_ip"],
         SERVER_PORT,
         initial["screenshot_interval"],
         initial["jpeg_quality"],
-        hostname,
-        username,
+        cli_overrides["interval"],
+        cli_overrides["quality"],
         client_state.capture_enabled,
     )
     _worker, _stop = start_recovery_worker(initial["server_ip"])
@@ -518,10 +580,14 @@ def run_self_test() -> None:
     import tempfile
 
     log_dir = Path(tempfile.mkdtemp(prefix="phase7-client-log-"))
-    setup_logging(log_dir)
+    first = setup_logging(log_dir)
+    time.sleep(0.02)
+    second = setup_logging(log_dir)
     logging.info("Client startup log check")
-    if not (log_dir / "client.log").is_file():
-        raise AssertionError("client runtime log was not created")
+    names = sorted(path.name for path in log_dir.glob("*.LOG"))
+    if first is None or second is None or len(names) != 2 or not all(name.endswith(".LOG") and len(name) == 22 for name in names):
+        raise AssertionError(f"session logs were not created: {names}")
+    close_logging()
 
 
 def run_cache_self_test(cache_root: Path) -> None:
@@ -966,8 +1032,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import atexit
+
+    atexit.register(close_logging)
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        logging.info("Stopped by user.")
+        logging.info("Application shutting down")
+        close_logging()
         raise SystemExit(0)
