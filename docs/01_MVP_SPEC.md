@@ -531,6 +531,8 @@ Action: Allow
 
 ## 24. Installer / Uninstaller
 
+Phase 7 installer / deployment 已在 2026-10-05 Windows 10/11 64-bit 實機通過。安裝檔是 x64，程式進入 `C:\Program Files\Windows Screenshot Monitor\Client` 與 `Server`，不是 Program Files (x86)。Runtime log 在目前使用者的 Documents，解除安裝不刪。是否刪除 application data 只在解除安裝當下詢問。
+
 ### Client installer
 
 安裝時要求：
@@ -604,5 +606,5 @@ P4  Local Cache / recovery / duplicate handling
 P5  Lock / sleep / unlock / wake
 P6  Server config / Last Known Good Config
 P7  Retention check + manual confirmation
-P8  Installer / Task Scheduler / Firewall / Uninstaller
+P8  Installer / Task Scheduler / Firewall / Uninstaller  (Windows deployment verified 2026-10-05)
 ```

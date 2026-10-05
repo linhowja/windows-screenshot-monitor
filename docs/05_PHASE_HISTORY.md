@@ -22,9 +22,9 @@
 | Phase 4 | Lock / Sleep / Wake | PASS | `9b113899332c8a283d18e554b28f0bd77adb2c38` | PASS |
 | Phase 5 | Configuration / LKG | PASS | `2e68abff06d8c4dd78b18593e9a606f7611dca3f` | PASS |
 | Phase 6 | Retention check + manual confirmation | PASS | `668d16bb239cd11e0eb4ad0ce99c29adc03b1366` | PASS |
-| Phase 7 | Installer | TODO | - | - |
+| Phase 7 | Installer / Deployment | PASS | `06c9cf6acc14bd02a3da066a9b0d6608f92c0325` | PASS |
 
-Phase 7 尚未開始。Installer、Task Scheduler、Firewall automation、Server GUI、authentication、TLS 與 multi-client management 都還沒有實作。
+Phase 7 的 installer / deployment 與 Windows Client → Server 整合已通過。Server GUI、authentication、TLS 與 multi-client management 仍未實作。Cache 的 5 分鐘實地補傳觀察仍是 PENDING FIELD TEST。
 
 ---
 
@@ -377,6 +377,83 @@ PASS。
 
 ---
 
+# Phase 7 — Installer / Deployment
+
+## Original goal
+
+把 Phase 1～6 做成可在 Windows 10/11 64-bit 安裝與運作的 Client / Server。範圍包含 PyInstaller、Inno Setup、x64 installation、Program Files、ProgramData、Task Scheduler、Firewall、install manifest、uninstall、runtime logging、Storage Root，以及 Windows 實機部署驗證。
+
+## Implementation
+
+- `packaging/client.spec` 與 `packaging/server.spec` 產生 `ScreenshotClient.exe`、`ScreenshotServer.exe`。
+- Spec 以 `SPECPATH` 的上一層找 repository root 的 `app.py` / `server.py`，不依賴目前工作目錄。
+- Windows 本機已成功產生兩個 EXE。Client / Server self-test 成功；Server self-test ExitCode 為 0。
+- Inno Setup 使用 `ArchitecturesAllowed=x64compatible` 與 `ArchitecturesInstallIn64BitMode=x64compatible`。`{autopf}` 因此進入 `C:\Program Files\Windows Screenshot Monitor\...`。
+- Client ProgramData 是 `C:\ProgramData\ScreenshotClient`，放 config 與 Cache。不建立 Client inbound firewall rule。
+- Server ProgramData 是 `C:\ProgramData\ScreenshotServer`，放 server config、retention state 與 install manifest。Storage Root 由安裝時選擇，並寫 ownership marker。
+- Task 使用 `New-ScheduledTaskAction`、`New-ScheduledTaskTrigger -AtLogOn`、`New-ScheduledTaskPrincipal -GroupId S-1-5-32-545` 與 `Register-ScheduledTask`。Client 是 Limited，Server 是 Highest。安裝後用 `schtasks /Query` 驗證。
+- Server firewall 名稱是 `Screenshot Server`，Inbound TCP 55550 Allow。已存在就不重複建立。
+- 解除安裝當下才詢問是否刪 application data。Documents logs 不刪。Storage Root 只有在使用者選 Yes、manifest 證明安裝前不存在、ownership marker 存在，且重新掃描只含正式截圖階層時才整棵刪除。
+
+## Bugs discovered
+
+第一輪 Server installer 實機把程式裝到 `C:\Program Files (x86)\Windows Screenshot Monitor\Server`。原因是 Inno Setup 沒有明確使用 x64-compatible installation mode。同一輪 `Screenshot Server` task 沒有建立。原本的 GroupId 加 `InteractiveToken` XML 不可靠，而且 `schtasks /Create` 的失敗被隱藏，安裝看起來仍成功。這兩個問題都是 Windows 實機才發現的。
+
+## Fixes
+
+Client 與 Server 的 `.iss` 都加入 x64compatible 設定，沒有硬編碼 `C:\Program Files`。Task 改成 ScheduledTasks cmdlets。建立或 `schtasks /Query` 失敗時，installer script 寫 install log 並直接失敗。重新安裝會清掉先前誤裝的 `Program Files (x86)` 程式目錄，但不刪 ProgramData。
+
+## Runtime logs
+
+Log 使用 Windows Known Folder `Documents`，每次 process start 一個檔，不做 1 MB rotation。
+
+```text
+Documents\ScreenshotClient\Logs\YYYYMMDD_HHMMSS_CC.LOG
+Documents\ScreenshotServer\Logs\YYYYMMDD_HHMMSS_CC.LOG
+```
+
+解除安裝即使選擇刪除 application data，也不刪這些 log。
+
+## Windows verification
+
+2026-10-05 Windows 實機：
+
+- Client / Server installer 都是 x64。
+- Server 安裝到 `C:\Program Files\Windows Screenshot Monitor\Server`，Program Files (x86) 不存在。
+- Task `Screenshot Server` 建立成功並可實際執行。Server 啟動後聽 `0.0.0.0:55550`。
+- Firewall `Screenshot Server` 為 Enabled / Inbound / Allow。
+- Storage Root 是 `C:\ScreenshotServer-Test2`，`install_manifest.json` 正常。
+- PyInstaller one-file 的父子 process 不是重複啟動問題。
+- Client 安裝到 `C:\Program Files\Windows Screenshot Monitor\Client`。Task `Screenshot Client` 建立成功並可啟動。
+- Hostname `JA-PC`，Windows username `howja`，Primary Monitor `1920x1080`，JPEG quality 40，interval 20 秒。
+- Server 收到圖片，階層是 `C:\ScreenshotServer-Test2\JA-PC_howja\20261005\*.jpg`，連續多張，約每 20 秒一張。
+- Client log 有 Capture、JPEG encode、HTTP 200、Uploaded discarded。Capture → JPEG → HTTP → Server → File Storage 整條成功。
+- Server 中斷時 Client 不停止，失敗圖片寫入 `C:\ProgramData\ScreenshotClient\Cache\YYYYMMDD\`。Server 恢復後新截圖可以上傳。
+
+Recovery worker 的設計週期是 300 秒。這次 Server 恢復後沒有立即補傳舊 Cache，等待時間不到 5 分鐘，不能直接判定為 Bug。5 分鐘實地補傳留待實際工作環境觀察。
+
+## Final status
+
+- Installer / deployment：PASS。
+- Windows real-machine Client → Server integration：PASS。
+- Cache offline storage：PASS。
+- Recovery mechanism：已實作，既有 self-test 通過。
+- Real-world 5-minute recovery observation：PENDING FIELD TEST。
+
+目前已達到可以進入實際工作環境部署測試的程度。Server GUI、authentication、TLS 與 multi-client management 仍未做。
+
+## Important commits
+
+- `f0fad626b01af3331df089fe104aff59d40b227e`：正式路徑與檔案 log。
+- `512ab4be085ce5edf13d929c5ff908e837de5b2e`：installer scripts。
+- `7a0b449c4e287de9a4d3971b573c50350415d4af`：解除安裝當下才詢問刪資料。
+- `caca7fe138efb2cfc6c6f6ad44954e874d67188f`：Storage Root ownership 檢查。
+- `a7e562116738755913f9b182335b257f06be96d7`：Documents session log。
+- `4c4490c508210dc586e9969cdc3dff8d2397ab2c`：PyInstaller spec 進入點。
+- `06c9cf6acc14bd02a3da066a9b0d6608f92c0325`：x64 installer 與 Scheduled Task。
+
+---
+
 # Important Debugging Lessons
 
 1. Linux self-test 不等於 Windows acceptance。
@@ -388,7 +465,9 @@ PASS。
 7. Retention 必須先建立 candidate list，再依使用者確認刪除。
 8. 可選功能的 exception 不應阻塞核心 Server startup。
 9. Atomic write 必須處理殘留 `.tmp`。
-10. 測試摘要必須與實際程式邏輯一致。恰好 14 天是保留，不是候選。
+11. Inno Setup 必須明確使用 x64-compatible mode，否則 `{autopf}` 會進 Program Files (x86)。
+12. Group task principal 不能再搭配 `InteractiveToken`；建立失敗必須讓 installer 失敗。
+13. Recovery worker 週期是 300 秒。短於 5 分鐘的觀察不能直接判定補傳失敗。
 
 ---
 
@@ -397,12 +476,13 @@ PASS。
 ```text
 Current branch: mvp-v1
 
-Phase 1-6 implementation HEAD:
-668d16bb239cd11e0eb4ad0ce99c29adc03b1366
+Phase 7 deployment HEAD:
+06c9cf6acc14bd02a3da066a9b0d6608f92c0325
 
 main:
 b01213eee4902762badc848d5196745ef194af63
 
-Phase 1-6: completed
-Phase 7: not started
+Phase 1-7 installer/deployment: completed
+5-minute cache recovery field observation: pending
+Release: not created
 ```
