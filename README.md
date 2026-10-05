@@ -1,543 +1,96 @@
-# TorCap – Self-Hosted Tor Screen Logger (Personal Use Only)
+# Windows Screenshot Monitor
 
-TorCap is a **personal** tool that:
+家庭內由管理者授權的 Windows 10/11 64-bit 電腦，定時截主螢幕，壓成灰階 JPEG，經區域網路送到同一台 Windows Server，再用檔案總管依時間查看。
 
-- Captures screenshots on your **own Windows accounts** at a fixed interval.
-- Sends them over **Tor** to your **own Debian server** running a private `.onion` site.
-- Lets you browse screenshots per **Windows username** and **date** via a simple web UI in Tor Browser.
+這不是企業監控平台。舊首頁介紹的 Tor、`.onion` 與 Web 相簿來自上游 [TorCap](https://github.com/ciscoAnass/torcap)，不再是這個專案的功能。
 
-> ⚠️ This is for **your own machines and accounts only**.  
-> Do **not** use it to spy on other people or devices you do not own or control.  
-> The design is transparent and avoids stealthy / malware-style behavior as much as possible.
+> 只部署在你有權管理、且已獲授權的 Windows 系統。程式可以背景執行，但不做程序隱藏、rootkit、繞過安全軟體或其他規避技術。
 
-
- **Note:** Tools compiled with PyInstaller often trigger **generic flags** such as  
-_"Win64:Malware-gen"_, _"Suspicious PE"_, or _"BehavesLike.Win64.Generic"_.  
-
-These are **false positives** caused by:
-
-- The executable being packed into a single file
-    
-- Screenshots being taken programmatically
-    
-- Network communication through Tor
-
-<img width="1087" height="587" alt="torcap" src="https://github.com/user-attachments/assets/2911b3e6-1e14-4eae-8ef7-1f8b15dbcb6e" />
-
----
-
-## 1. Architecture Overview
-
-There are two components:
-
-1. **Server (Debian 13)** – `tor_server.py`
-   - Runs a Flask web app on `127.0.0.1:5000`.
-   - Exposed via Tor as a **hidden service** (e.g. `xyz123.onion`).
-   - Stores screenshots on disk under a root folder, like:
-     ```text
-     /home/youruser/TorCap_data/
-       ├─ CiscoAnass/
-       │   ├─ 21-11-2025/
-       │   │   ├─ screenshot_20251121_000918.png
-       │   │   └─ ...
-       └─ AnotherUser/
-           └─ 22-11-2025/
-     ```
-   - Web UI (via Tor Browser):
-     - Login with your admin credentials.
-     - See **users → days → thumbnails**, and click thumbnails to preview full images.
-
-2. **Client (Windows)** – `app.py` → `TorCap.exe`
-   - Runs in the background when the user logs in (via Task Scheduler).
-   - Takes screenshots every _N_ seconds (default `10`).
-   - Stores them temporarily in a local folder (e.g. `C:\Users\CiscoAnass\Pictures\Security\DD-MM-YYYY`).
-   - Periodically batches uploads to the Tor server over a SOCKS proxy (`Tor`).
-   - After a successful upload, it **deletes** the local screenshot.
-   - Enforces a max local folder size (MB) and deletes oldest non-pending files when above the limit.
-
-Everything is configured through **JSON files**, no environment variables needed.
-
----
-
-## 2. Requirements
-
-### 2.1 Server (Debian 13)
-
-- Debian 13 (or similar Linux)
-- `python3`, `python3-venv`, `python3-pip`
-- `tor`
-- Python packages (inside a venv):
-  - `flask`
-  - `gunicorn` (recommended for production)
-
-### 2.2 Windows Client
-
-For **building** the EXE:
-
-- Windows 10/11 64-bit
-- Python 3.10+ (you used 3.14)
-- `pip`
-- Python packages (inside a venv):
-  - `mss`
-  - `requests`
-  - `pysocks`
-  - `pyinstaller` (for building the EXE)
-
-For **running** the EXE on each Windows PC:
-
-- Only the **built EXE** (e.g. `TorCap.exe`)
-- A matching `config.json` in the same folder
-- Tor connectivity (typically Tor Browser or Tor service providing a SOCKS proxy on `127.0.0.1:9050` or `127.0.0.1:9150`)
-
----
-
-## 3. Server Setup (Debian 13)
-
-### 3.1 Create project folder and virtualenv
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip tor
-
-mkdir -p ~/TorCap
-cd ~/TorCap
-
-python3 -m venv venv
-source venv/bin/activate
-
-pip install flask gunicorn
-```
-
-Copy these files into `~/TorCap`:
-
-- `tor_server.py`
-- `server_config.json` (you will create it in the next step)
-
-### 3.2 Create `server_config.json`
-
-In `~/TorCap/server_config.json`:
-
-```json
-{
-  "root_folder": "/home/youruser/TorCap_data",
-  "web_username": "anass",
-  "web_password": "",
-  "web_password_hash": "",
-  "upload_password": "CHANGE_THIS_UPLOAD_PASSWORD",
-  "site_name": "TorCap",
-  "session_secret": "CHANGE_THIS_SESSION_SECRET"
-}
-```
-
-- `root_folder` – where screenshots are stored on the server.
-- `web_username` – username for the **web UI** (Tor Browser).
-- `web_password` – leave as `""` (we will replace it with a hashed password).
-- `web_password_hash` – will be filled automatically by `tor_server.py --set-admin-password` (see below).
-- `upload_password` – **shared secret** between server and Windows clients.  
-  - This must match `upload_password` in each Windows `config.json`.
-  - This is used only for the **upload API**, not for the web UI.
-- `site_name` – title displayed on the site.
-- `session_secret` – long random string used to secure Flask sessions.
-
-> ⚠️ Keep this file private. It never leaves your Debian server.  
->   Set file permissions to restrict access (see section 8).
-
-### 3.3 Set the admin web password (hashed)
-
-The admin password for the web UI is **never stored in plain text**.  
-Instead, `tor_server.py` can hash it and store only the hash (PBKDF2-SHA256).
-
-From `~/TorCap`:
-
-```bash
-cd ~/TorCap
-source venv/bin/activate
-python tor_server.py --set-admin-password
-```
-
-You will see prompts:
+## 30 秒看懂
 
 ```text
-This will set (or reset) the ADMIN web password for the TorCap UI.
-New web password: ********
-Repeat web password: ********
-Admin web password updated successfully.
+使用者登入
+  -> Client 由工作排程器啟動（登入時，不做 Windows Service）
+  -> 只有桌面可用、未鎖定、未睡眠才截圖
+  -> 只截 Primary Monitor，保留原始解析度
+  -> 8-bit 灰階 JPEG（品質預設 40，範圍 20–100）
+  -> POST http://<ServerIPv4>:55550/api/upload
+  -> Server 寫完並確認檔案存在後才回 HTTP 200
+  -> Client 丟棄這張圖
 ```
 
-After this, `server_config.json` will have something like:
+上傳失敗、逾時（5 秒）或 Server 沒回應時，圖片進入本機 Cache，Client 繼續截圖。約每 5 分鐘補傳一次；解鎖或喚醒且桌面可用後會再觸發一次。補傳由舊到新，成功一張就刪一張，不拋住下一次截圖。
 
-```json
-  "web_username": "anass",
-  "web_password": "",
-  "web_password_hash": "pbkdf2_sha256$200000$<salt_hex>$<hash_hex>",
-```
+Server 不提供網頁。圖片直接用檔案總管的大圖示或超大圖示查看。
 
-From now on:
+## 資料放在哪
 
-- `/login` compares your typed password with the stored **hash**.
-- Even if an attacker steals `server_config.json`, they do not see your raw admin password.
-
-### 3.4 Configure Tor Hidden Service
-
-Edit Tor config:
-
-```bash
-sudo nano /etc/tor/torrc
-```
-
-Add this at the end (if not already present):
+安裝程式與圖片分開。Storage Root 在安裝 Server 時選擇，之後可改，但只影響新資料，不搬舊檔。
 
 ```text
-HiddenServiceDir /var/lib/tor/TorCap_service/
-HiddenServicePort 80 127.0.0.1:5000
+<StorageRoot>\
+└── Hostname_WindowsUsername\
+    └── YYYYMMDD\
+        └── YYYYMMDD_HHMMSS_CC.jpg
 ```
 
-Save and restart Tor:
+身分由電腦名稱與 Windows 帳號組成，例如 `JA-PC_howja`。檔名裡的 `CC` 是百分之一秒，不是序號。同一客戶、同一天、同一檔名再上傳時，Server 視為成功並回 HTTP 200，不覆蓋、也不另存一份。
 
-```bash
-sudo systemctl restart tor
-```
+## 設定從哪裡來
 
-Get your `.onion` address:
+Server 是設定來源。預設為截圖間隔 20 秒、JPEG 品質 40、Client Cache 保留 3 天、Server 圖片保留 14 天。成功上傳的 HTTP 200 會順便回傳最新的 Client 設定。Server 離線時，Client 繼續用上一次成功的設定，不停止工作。
 
-```bash
-sudo cat /var/lib/tor/TorCap_service/hostname
-```
+Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢查，確認後才刪除這次掃描到的候選。
 
-Example output:
+## 現在做到哪
+
+此分支是目前實作。Phase 1–7 已通過 Windows 實機驗證，細節在 [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)。
+
+| Phase | 範圍 | 狀態 |
+| --- | --- | --- |
+| 1 | 截圖與灰階 JPEG | 通過；後來改為保留原始解析度，不再縮成 25% |
+| 2 | HTTP 上傳、寫入確認、5 秒逾時 | 通過 |
+| 3 | 失敗進 Cache、補傳、重複上傳保護 | 通過；5 分鐘補傳的實地觀察仍待確認 |
+| 4 | 鎖定、睡眠、解鎖、喚醒 | 通過 |
+| 5 | Server 設定與 Last Known Good | 通過 |
+| 6 | 每日啟動時人工確認後才刪舊圖 | 通過 |
+| 7 | 安裝、登入工作、防火牆、解除安裝 | 通過 Windows 部署驗證 |
+
+尚未做：Server 設定 GUI、身分驗證、TLS、多 Client 管理介面。尚未發 release tag。
+
+## 程式在哪
+
+| 檔案 | 責任 |
+| --- | --- |
+| `app.py` | Windows Client：截圖、壓縮、上傳、Cache |
+| `server.py` | Windows Server：接收上傳、寫檔、設定、保留檢查 |
+| `windows_events.py` | 登入、鎖定、睡眠與喚醒 |
+| `packaging/` | PyInstaller 與 Inno Setup：`ScreenshotClient.exe`、`ScreenshotServer.exe` |
+| `tor_server.py` | 舊 TorCap 伺服器，不要當成現在的 Server |
+
+安裝後的位置：
 
 ```text
-nlbsg4kl2itgwcu5g6ysikwmx77lavxb5kh2c36mg7wlmazn2332hhid.onion
+C:\Program Files\Windows Screenshot Monitor\Client
+C:\Program Files\Windows Screenshot Monitor\Server
+C:\ProgramData\ScreenshotClient          設定與 Cache
+C:\ProgramData\ScreenshotServer          設定、保留狀態、安裝清單
+Documents\ScreenshotClient\Logs          每次啟動一個日誌
+Documents\ScreenshotServer\Logs
 ```
 
-This is the URL you will use in:
+Server 安裝時建立入站規則 `Screenshot Server`：TCP 55550 Allow。Client 不建入站規則。解除安裝預設不刪圖片與 Documents 日誌。
 
-- Tor Browser (to access the web UI)
-- Windows `config.json` as `server_url`.
+建置說明見 [`packaging/BUILD.txt`](packaging/BUILD.txt)。
 
-### 3.5 Run the Flask server
+## 先讀哪份文件
 
-#### Option A – development / quick testing
+1. [`docs/01_MVP_SPEC.md`](docs/01_MVP_SPEC.md)：功能規格。與程式衝突時以它為準。
+2. [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)：每階段做了什麼、Windows 實機遇到什麼。它不是規格。
+3. [`docs/00_PROJECT_OVERVIEW.md`](docs/00_PROJECT_OVERVIEW.md)：專案定位。
+4. [`docs/02_TORCAP_FILE_MAP.md`](docs/02_TORCAP_FILE_MAP.md)：舊檔案怎麼改。
+5. [`docs/04_PROJECT_HANDOFF.md`](docs/04_PROJECT_HANDOFF.md)：尚未定案的選擇，不要當成已決定的規格。
 
-```bash
-cd ~/TorCap
-source venv/bin/activate
-python tor_server.py
-```
+## 授權
 
-- Runs Flask’s built-in dev server.
-- Good for quick tests, **not recommended for long-term production**.
-
-#### Option B – production (recommended) with gunicorn
-
-```bash
-cd ~/TorCap
-source venv/bin/activate
-gunicorn --bind 127.0.0.1:5000 --workers 3 --threads 4 tor_server:app
-```
-
-- `tor_server:app` = module name `tor_server` and Flask object `app` inside it.
-- Multiple workers + threads handle concurrent requests better than `app.run()`.
-
-Tor still points to `127.0.0.1:5000` via:
-
-```text
-HiddenServicePort 80 127.0.0.1:5000
-```
-
-### 3.6 Test in Tor Browser
-
-Open Tor Browser and go to:
-
-```text
-http://YOUR_ONION_HOSTNAME.onion/
-```
-
-Log in using `web_username` and the password you set with `--set-admin-password`.
-
-You should see:
-
-- A **Users** list (e.g. `CiscoAnass`, `AnassWork`, etc.)
-- Clicking a user shows available **days**.
-- Clicking a day shows all screenshots as thumbnails.
-- Clicking a thumbnail opens a **full preview modal**.
-
----
-
-## 4. Windows Client Setup (builder machine)
-
-You only need to do this on the machine where you **build** `TorCap.exe`.
-
-### 4.1 Create project folder & virtualenv
-
-On Windows (PowerShell):
-
-```powershell
-cd C:\Users\YourUser\Desktop
-mkdir TorCap
-cd .\TorCap
-
-python -m venv venv
-.\venv\Scripts\activate
-
-pip install mss requests pysocks pyinstaller
-```
-
-Copy into this folder:
-
-- `app.py` (TorCap client)
-- `config.json` (client config template)
-
-### 4.2 Create `config.json` (client)
-
-Example `config.json`:
-
-```json
-{
-  "interval_seconds": 10,
-  "screenshot_folder": "C:/Users/CiscoAnass/Pictures/Security",
-  "server_url": "http://nlbsg4kl2itgwcu5g6ysikwmx77lavxb5kh2c36mg7wlmazn2332hhid.onion",
-  "upload_password": "CHANGE_THIS_UPLOAD_PASSWORD",
-  "upload_batch_size": 10,
-  "max_folder_size_mb": 500,
-  "tor_socks_proxy": "socks5h://127.0.0.1:9050",
-  "log_file": "screen_guard.log"
-}
-```
-
-- `interval_seconds` – capture interval in seconds.
-- `screenshot_folder` – base folder; client will create subfolders per day (`DD-MM-YYYY`).
-- `server_url` – your `.onion` address from `hostname` (use `http://`, not https).
-- `upload_password` – must match `upload_password` from `server_config.json` (used for the upload API).
-- `upload_batch_size` – how many screenshots to upload at once.
-- `max_folder_size_mb` – maximum local disk usage before rotation starts deleting oldest non-pending files.
-- `tor_socks_proxy`:
-  - If Tor is running as a service: usually `socks5h://127.0.0.1:9050`
-  - If using Tor Browser only: often `socks5h://127.0.0.1:9150`
-- `log_file` – log file name (stored next to the EXE by default).
-
-You can test with:
-
-```powershell
-.\venv\Scripts\activate
-python .\app.py
-```
-
-Check `screen_guard.log` and your server’s `root_folder` to confirm uploads are working.
-
-### 4.3 Build the EXE
-
-Use PyInstaller to build a single-file EXE with a clean, honest name (e.g. `TorCap.exe`):
-
-```powershell
-.\venv\Scripts\activate
-
-pyinstaller --onefile --noconsole `
-  --icon="C:\Users\YourUser\Desktop\TorCap\TorCap.ico" `
-  --name="TorCap" `
-  "C:\Users\YourUser\Desktop\TorCap\app.py"
-```
-
-After it finishes, you will get:
-
-```text
-C:\Users\YourUser\Desktop\TorCap\dist\TorCap.exe
-```
-
-This file is what you deploy to your Windows PCs.
-
----
-
-## 5. Deploying to Each Windows PC
-
-You do **not** need Python on every PC, only the EXE + config.
-
-### 5.1 Folder layout on the target PC
-
-On each Windows machine, choose a folder like:
-
-```text
-C:\Program Files\TorCap\
-```
-
-Copy into that folder:
-
-- `TorCap.exe`
-- `config.json`
-
-You can adjust `config.json` per machine if needed (e.g. different `screenshot_folder`).
-
-### 5.2 Create a Scheduled Task (run at user login)
-
-1. Open **Task Scheduler**.
-2. Click **Create Task…** (not “Basic Task” for more options if you prefer).
-3. **General** tab:
-   - Name: `TorCap`
-   - “Run only when user is logged on” (recommended for a transparent tool).
-4. **Triggers** tab → **New…**:
-   - Begin the task: “At log on”
-   - Settings: “Any user” or a specific user (your choice).
-5. **Actions** tab → **New…**:
-   - Action: “Start a program”
-   - Program/script: `C:\Program Files\TorCap\TorCap.exe`
-   - Start in (optional but recommended): `C:\Program Files\TorCap\`
-6. Click **OK** to save.
-
-Now, each time that user logs in, `TorCap.exe` will start, capture screenshots, and upload them to your Tor server.
-
----
-
-## 6. How the Client Behaves
-
-- On startup:
-  - Loads `config.json` from the same directory as the EXE.
-  - Ensures the `screenshot_folder` exists.
-  - Scans that folder for existing `*.png` files and treats them as **pending uploads** (useful when internet / Tor was down).
-- Every `interval_seconds`:
-  - Creates a folder for today: `DD-MM-YYYY` inside the screenshot folder.
-  - Captures a screenshot into `screenshot_YYYYMMDD_HHMMSS.png` inside that day folder.
-  - Adds the new file to the **pending** list.
-  - Runs **rotation** if total size > `max_folder_size_mb`, deleting oldest files that are not currently pending.
-- Upload logic:
-  - When `pending` length ≥ `upload_batch_size`, it tries to upload them to `server_url + "/api/upload"`
-    via the Tor SOCKS proxy (`tor_socks_proxy`).
-  - Sends:
-    - `username` – the Windows username (`getpass.getuser()`).
-    - `day` – derived from filename or file’s mtime (`DD-MM-YYYY`).
-    - `file` – the PNG screenshot.
-    - Header `X-Upload-Password: <upload_password>`.
-  - On HTTP 200 → deletes the local file.
-  - On error → keeps the file for the next attempt.
-
----
-
-## 7. How the Server Behaves
-
-- Reads `server_config.json` at startup.
-- Stores screenshots under:
-
-  ```text
-  root_folder / <username> / <day> / <filename>.png
-  ```
-
-- Web UI structure:
-  - `/login` → login form (Tor only). Password is checked against a **PBKDF2-SHA256 hash** stored in `web_password_hash`.
-  - `/` → list of users
-  - `/user/<username>` → list of days & file counts
-  - `/user/<username>/<day>` → grid of thumbnails
-  - Clicking a thumbnail opens a **full preview modal**.
-- API endpoint for uploads:
-  - `POST /api/upload`
-  - Requires header `X-Upload-Password` equal to `upload_password` in `server_config.json`.
-  - Form fields:
-    - `username`
-    - `day` (optional; if empty, server uses current UTC date)
-    - `file` → screenshot
-  - Rejects bad credentials or invalid paths with error JSON.
-
----
-
-## 8. Security & Ethics
-
-### 8.1 Password handling
-
-- **Admin web password (`/login`)**:
-  - Stored as a **PBKDF2-SHA256 hash** in `server_config.json` (`web_password_hash`).
-  - Set via `python tor_server.py --set-admin-password`.
-  - Never stored in plain text after that.
-
-- **Upload password (`upload_password`)**:
-  - Shared between server and client.
-  - Needed so the client can authenticate to `/api/upload`.
-  - If an attacker steals `config.json` on a Windows machine, they can impersonate that client.  
-    This is unavoidable because the client must know the secret to use it.
-  - Keep `config.json` on Windows machines as private as possible (only your account, protected device).
-
-### 8.2 File permissions on the server
-
-Lock down sensitive files on Debian:
-
-```bash
-sudo chown youruser:youruser /home/youruser/TorCap/server_config.json
-chmod 600 /home/youruser/TorCap/server_config.json
-```
-
-Same for the data folder if you want to restrict which local users can view raw PNGs:
-
-```bash
-sudo chown -R youruser:youruser /home/youruser/TorCap_data
-chmod -R 700 /home/youruser/TorCap_data
-```
-
-### 8.3 Ethics
-
-- This tool is intentionally designed for **personal use on your own machines**:
-  - You own the Debian server.
-  - You own the Windows PCs / user accounts.
-- Do **not** deploy it on machines you don’t own, or users you don’t have a clear agreement with.
-- The client:
-  - Uses a clear folder (`TorCap`, `TorCap.exe`) if you choose so.
-  - Uses standard, legitimate persistence (Windows Task Scheduler).
-  - Avoids stealth techniques like hiding processes, rootkits, registry abuse, etc.
-
-### 8.4 Antivirus
-
-- Some AV engines may flag any app that:
-  - Captures screens,
-  - Auto-starts with Windows,
-  - Uses Tor.
-- Since this is for your own lab, the honest and safe approach is:
-  - Use a clear, honest program name (`TorCap.exe`).
-  - Keep the code readable and documented.
-  - If needed, add an **exception** in your own AV for this file/folder (because you trust your own code).
-
----
-
-## 9. Troubleshooting
-
-### 9.1 No users appear in the web UI
-
-- Check that screenshots are actually being created on Windows:
-  - Look inside `screenshot_folder` (and sub-folders by date).
-- Check that uploads succeed:
-  - Look at the Windows log file (`screen_guard.log` next to the EXE).
-  - Look under `root_folder` on Debian:
-    ```bash
-    ls -R /home/youruser/TorCap_data
-    ```
-- If you only see folders on disk but not in UI, ensure:
-  - `root_folder` in `server_config.json` is exactly the parent directory containing the username folders.
-
-### 9.2 401 Unauthorized in logs
-
-- Means `upload_password` in Windows `config.json` does **not** match `upload_password` in `server_config.json`.
-- Fix both to use the same secret string.
-
-### 9.3 Tor / network issues
-
-- On Debian:
-  - Check Tor status: `sudo systemctl status tor`
-- On Windows:
-  - Ensure Tor Browser or Tor service is running.
-  - Verify the `tor_socks_proxy` in `config.json`:
-    - `socks5h://127.0.0.1:9050` (Tor service)
-    - `socks5h://127.0.0.1:9150` (Tor Browser)
-- Check Windows logs for errors like “Network error while uploading …”.
-
-### 9.4 Disk usage growing too much on Windows
-
-- Lower `max_folder_size_mb` in `config.json`.
-- Increase `upload_batch_size` so uploads happen more frequently.
-- Make sure the server is reachable so uploads can succeed and local files are removed.
-
----
-
-## 10. Notes
-
-- All code and config here is intentionally **simple and transparent**.
-- You are responsible for how you use this tool; keep it ethical and legal.
-- If you expand it (tray icon, GUI, encryption, multi-user web auth, etc.), keep the same principles:
-  - No stealth.
-  - Clear configuration.
-  - Respect for privacy and consent.
-
+MIT。程式起點為 [ciscoAnass/torcap](https://github.com/ciscoAnass/torcap)。
