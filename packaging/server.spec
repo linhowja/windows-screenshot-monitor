@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
-# Build from the repository root:
-# pyinstaller packaging/server.spec
+project_root = os.path.abspath(os.path.join(SPECPATH, os.pardir))
+entry_script = os.path.join(project_root, "server.py")
 
 a = Analysis(
-    ["server.py"],
-    pathex=[],
+    [entry_script],
+    pathex=[project_root],
     binaries=[],
     datas=[],
     hiddenimports=["flask", "waitress", "PIL"],

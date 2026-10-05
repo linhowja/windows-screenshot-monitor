@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
-# Build from the repository root:
-# pyinstaller packaging/client.spec
+project_root = os.path.abspath(os.path.join(SPECPATH, os.pardir))
+entry_script = os.path.join(project_root, "app.py")
 
 a = Analysis(
-    ["app.py"],
-    pathex=[],
+    [entry_script],
+    pathex=[project_root],
     binaries=[],
     datas=[],
     hiddenimports=["mss", "PIL", "windows_events"],
