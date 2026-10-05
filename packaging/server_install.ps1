@@ -37,34 +37,45 @@ if (-not $configExisted) {
 icacls $programData /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)M" | Out-Null
 icacls $StorageRoot /grant:r "Users:(OI)(CI)M" | Out-Null
 
+$installLog = Join-Path $env:TEMP "ScreenshotServer-install.log"
+function Write-InstallLog([string]$Message) {
+    Add-Content -Path $installLog -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message)
+}
+function Fail-Install([string]$Message) {
+    Write-InstallLog $Message
+    Write-Error $Message
+    exit 1
+}
 $existingRule = Get-NetFirewallRule -DisplayName "Screenshot Server" -ErrorAction SilentlyContinue
 if (-not $existingRule) {
-    New-NetFirewallRule -DisplayName "Screenshot Server" -Direction Inbound -Protocol TCP -LocalPort 55550 -Action Allow | Out-Null
+    try {
+        New-NetFirewallRule -DisplayName "Screenshot Server" -Direction Inbound -Protocol TCP -LocalPort 55550 -Action Allow | Out-Null
+    } catch {
+        Fail-Install "Firewall rule creation failed: $($_.Exception.Message)"
+    }
 }
-
-$taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
-  <Principals>
-    <Principal id="Author">
-      <GroupId>S-1-5-32-545</GroupId>
-      <RunLevel>HighestAvailable</RunLevel>
-      <LogonType>InteractiveToken</LogonType>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <Enabled>true</Enabled>
-  </Settings>
-  <Actions Context="Author"><Exec><Command>$exe</Command></Exec></Actions>
-</Task>
-"@
-$taskFile = Join-Path $env:TEMP "screenshot-server-task.xml"
-Set-Content -Path $taskFile -Value $taskXml -Encoding Unicode
-schtasks.exe /Create /TN $taskName /XML $taskFile /F | Out-Null
+if (-not (Get-NetFirewallRule -DisplayName "Screenshot Server" -ErrorAction SilentlyContinue)) {
+    Fail-Install "Firewall rule missing after setup"
+}
+$legacy = "C:\Program Files (x86)\Windows Screenshot Monitor\Server"
+if (Test-Path $legacy) {
+    Write-InstallLog "Removing previous 32-bit server directory: $legacy"
+    Remove-Item -Recurse -Force $legacy -ErrorAction SilentlyContinue
+}
+try {
+    $action = New-ScheduledTaskAction -Execute $exe
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+    $principal = New-ScheduledTaskPrincipal -GroupId "S-1-5-32-545" -RunLevel Highest
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+} catch {
+    Fail-Install "Scheduled task creation failed: $($_.Exception.Message)"
+}
+schtasks.exe /Query /TN $taskName | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Fail-Install "Scheduled task query failed after registration: $taskName"
+}
+Write-InstallLog "Scheduled task verified: $taskName install=$InstallPath"
 
 $manifest = @{
     program_install_path = $InstallPath

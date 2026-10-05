@@ -1,6 +1,9 @@
 [Setup]
 AppName=Windows Screenshot Monitor Client
 AppVersion=0.7
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+PrivilegesRequired=admin
 DefaultDirName={autopf}\Windows Screenshot Monitor\Client
 DisableProgramGroupPage=yes
 OutputBaseFilename=ScreenshotClientSetup

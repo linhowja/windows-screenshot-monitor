@@ -1,6 +1,8 @@
 [Setup]
 AppName=Windows Screenshot Monitor Server
 AppVersion=0.7
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 DefaultDirName={autopf}\Windows Screenshot Monitor\Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
