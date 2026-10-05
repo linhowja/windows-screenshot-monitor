@@ -10,10 +10,10 @@
 
 | 分支 | 這裡有什麼 | 什麼時候看 |
 | --- | --- | --- |
-| `main`（目前的預設分支） | 從 TorCap 匯入的舊程式，加上專案規格文件 | 要對照「改造前長什麼樣」時 |
-| [`mvp-v1`](https://github.com/linhowja/windows-screenshot-monitor/tree/mvp-v1) | 目前的 Client / Server 實作與安裝程式 | 要看現在的系統、安裝與進度時 |
+| `main`（目前的預設分支） | 從 TorCap 匯入的舊程式，加上開工時的規格文件 | 要對照「改造前長什麼樣」時 |
+| [`mvp-v1`](https://github.com/linhowja/windows-screenshot-monitor/tree/mvp-v1) | 目前的 Client / Server、安裝程式與已更新的說明 | 要看現在的系統時 |
 
-GitHub 開啟專案頁時會先顯示 `main`。實作請切到 `mvp-v1`。
+GitHub 開啟專案頁時會先顯示 `main`。實作與最新說明請切到 `mvp-v1`。這裡的 `docs/` 仍是開工前版本，不要當成現況。
 
 ## 它做什麼
 
@@ -51,17 +51,16 @@ Windows Client
 
 ## 規格與進度
 
-功能以 [`docs/01_MVP_SPEC.md`](docs/01_MVP_SPEC.md) 為準。與程式或舊 TorCap 行為衝突時，先看規格。
-
-`mvp-v1` 上 Phase 1–7 已通過 Windows 實機驗證，記錄在該分支的 [`docs/05_PHASE_HISTORY.md`](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/05_PHASE_HISTORY.md)。尚未發 release tag。五分鐘 Cache 補傳的實地觀察仍待確認。
+現行說明在 [`mvp-v1`](https://github.com/linhowja/windows-screenshot-monitor/tree/mvp-v1)。Phase 1–7 已通過 Windows 實機驗證，記錄在 [`docs/05_PHASE_HISTORY.md`](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/05_PHASE_HISTORY.md)。尚未發 release tag。五分鐘 Cache 補傳的實地觀察仍待確認。
 
 ## 建議閱讀順序
 
-1. [`docs/01_MVP_SPEC.md`](docs/01_MVP_SPEC.md)：做什麼、不做什麼
-2. [`docs/00_PROJECT_OVERVIEW.md`](docs/00_PROJECT_OVERVIEW.md)：專案定位與分工
-3. [`docs/02_TORCAP_FILE_MAP.md`](docs/02_TORCAP_FILE_MAP.md)：舊檔案怎麼改
-4. [`docs/03_AI_WORKFLOW.md`](docs/03_AI_WORKFLOW.md)：修改與審查流程
-5. [`docs/04_PROJECT_HANDOFF.md`](docs/04_PROJECT_HANDOFF.md)：尚未定案的技術選擇
+請讀 `mvp-v1` 上的文件，不要讀本分支的舊 `docs/`：
+
+1. [README](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/README.md)
+2. [docs/01_MVP_SPEC.md](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/01_MVP_SPEC.md)
+3. [docs/00_PROJECT_OVERVIEW.md](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/00_PROJECT_OVERVIEW.md)
+4. [docs/05_PHASE_HISTORY.md](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/05_PHASE_HISTORY.md)
 
 ## 授權
 
