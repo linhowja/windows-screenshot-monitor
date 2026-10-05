@@ -21,7 +21,7 @@
 
 上傳失敗、逾時（5 秒）或 Server 沒回應時，圖片進入本機 Cache，Client 繼續截圖。約每 5 分鐘補傳一次；解鎖或喚醒且桌面可用後會再觸發一次。補傳由舊到新，成功一張就刪一張，不拋住下一次截圖。
 
-Server 不提供網頁。圖片直接用檔案總管的大圖示或超大圖示查看。
+Server 不提供網頁。圖片直接用檔案總管的大圖示或超大圖示查看。正式監聽用 Waitress，不是 Flask development server。
 
 ## 資料放在哪
 
@@ -67,6 +67,8 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 | `windows_events.py` | 登入、鎖定、睡眠與喚醒 |
 | `packaging/` | PyInstaller 與 Inno Setup：`ScreenshotClient.exe`、`ScreenshotServer.exe` |
 | `tor_server.py` | 舊 TorCap 伺服器，不要當成現在的 Server |
+| `install.bat` | 舊 TorCap 安裝腳本，不要執行 |
+| `config.json` | 舊 TorCap 範本，現在 Client 不讀它 |
 
 安裝後的位置：
 
@@ -87,9 +89,9 @@ Server 安裝時建立入站規則 `Screenshot Server`：TCP 55550 Allow。Clien
 
 1. [`docs/01_MVP_SPEC.md`](docs/01_MVP_SPEC.md)：功能規格。與程式衝突時以它為準。
 2. [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)：每階段做了什麼、Windows 實機遇到什麼。它不是規格。
-3. [`docs/00_PROJECT_OVERVIEW.md`](docs/00_PROJECT_OVERVIEW.md)：專案定位。
-4. [`docs/02_TORCAP_FILE_MAP.md`](docs/02_TORCAP_FILE_MAP.md)：舊檔案怎麼改。
-5. [`docs/04_PROJECT_HANDOFF.md`](docs/04_PROJECT_HANDOFF.md)：尚未定案的選擇，不要當成已決定的規格。
+3. [`docs/00_PROJECT_OVERVIEW.md`](docs/00_PROJECT_OVERVIEW.md)：專案定位與目前狀態。
+4. [`docs/02_TORCAP_FILE_MAP.md`](docs/02_TORCAP_FILE_MAP.md)：舊檔實際怎麼處理；下半是開工計畫，不要當現況。
+5. [`docs/04_PROJECT_HANDOFF.md`](docs/04_PROJECT_HANDOFF.md)：已定案項目與仍未做的項目。不要再把它當成未決清單。
 
 ## 授權
 
