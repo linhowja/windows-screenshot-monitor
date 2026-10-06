@@ -479,14 +479,13 @@ Windows Client / Server 部署與整合測試已完成。Server GUI、authentica
 
 ```text
 Current branch: mvp-v1
+Default branch: main
 
-Phase 7 deployment HEAD:
+Phase 7 deployment code:
 06c9cf6acc14bd02a3da066a9b0d6608f92c0325
 
-main:
-b01213eee4902762badc848d5196745ef194af63
-
 Phase 1-7 installer/deployment: completed
+Windows Client / Server integration: completed
 5-minute cache recovery field observation: completed 2026-10-06
   Server interruption cache retried oldest to newest after the 300-second cycle
   local cache files deleted after successful upload
