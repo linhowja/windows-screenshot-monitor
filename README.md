@@ -11,6 +11,7 @@
 ```text
 使用者登入
   -> Client 由工作排程器啟動（登入時，不做 Windows Service）
+  -> 本次 process 先等一次隨機 7–30 秒，再做第一次截圖
   -> 只有桌面可用、未鎖定、未睡眠才截圖
   -> 只截 Primary Monitor，保留原始解析度
   -> 8-bit 灰階 JPEG（品質預設 40，範圍 20–100）
@@ -56,6 +57,7 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 | 6 | 每日啟動時人工確認後才刪舊圖 | 通過 |
 | 7 | 安裝、登入工作、防火牆、解除安裝 | 通過 Windows 部署驗證 |
 | 8-A | Server 本機設定 GUI | 已實作；儲存後需重新啟動 Server |
+| 8-B | Client 啟動後第一次截圖隨機延遲 | 已實作；只延遲一次 7–30 秒，之後恢復固定間隔 |
 
 尚未做：身分驗證、TLS、多 Client 管理介面。尚未發 release tag。Server 設定 GUI 已於 Phase 8-A 實作，見下方啟動方式。
 
@@ -93,6 +95,8 @@ C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
 ```
 
 開始功能表也有 `Screenshot Server Configuration`。Close 不寫設定。
+
+Client 每次 process 啟動只抽一次 7–30 秒整數延遲，等完才做第一次截圖。之後恢復 `screenshot_interval`。這不是每次截圖都隨機，也不是 Server 設定，不影響 300 秒 Cache recovery。鎖定或睡眠期間仍不截圖。
 
 建置說明見 [`packaging/BUILD.txt`](packaging/BUILD.txt)。
 

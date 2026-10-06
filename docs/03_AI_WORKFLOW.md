@@ -59,6 +59,7 @@ Gemini 只 review，不與 Grok 同時改同一檔案。優先看 bug、Windows 
 | 6 | 當初寫自動清理 | 通過；改為每日人工確認 |
 | 7 | 安裝、工作排程、防火牆、解除安裝 | 通過 Windows 部署驗證 |
 | 8-A | Server 本機設定 GUI | 已實作；5 個既有設定，儲存後需重新啟動 Server |
+| 8-B | Client 啟動後第一次截圖延遲 | 已實作；一次 7–30 秒，之後固定 interval |
 
 ## 4. Review rule
 

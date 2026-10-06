@@ -494,6 +494,35 @@ C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
 
 ---
 
+# Phase 8-B — Client Startup Random Capture Delay
+
+## Original goal
+
+避免 Client process 啟動後第一次截圖時間可被登入時間直接推算。每次啟動只隨機等 7–30 秒，再做第一次截圖。
+
+## Implementation
+
+- `startup_capture_delay_seconds()` 用標準函式庫 `random.randint(7, 30)`，包含 7 與 30。
+- 只在本次 process 的第一個 capture cycle 使用一次。第一次截圖完成後，下一次是 `screenshot_interval`，不把延遲累加進去。
+- 等待重用 `client_state.wait_until_disabled()`，不用阻塞整個 process 的 `time.sleep()`。鎖定、睡眠或尚未可截圖時不截圖。
+- 若啟動時本來就在等 capture enabled，仍走原本解鎖後等待一個 interval 的路徑。
+- Recovery worker 仍立刻啟動，週期仍是 300 秒。
+- 不是設定檔欄位，Server GUI 與 `server.py` 沒有為這項改動。
+
+日誌會記啟動時間、延遲秒數，以及預定的第一次截圖時間。
+
+## Tests
+
+`python app.py --self-test` 包含 Phase 8-B：範圍、包含 7 與 30、重新抽值、不改 interval、第一次之後回到固定間隔、disabled 不完成延遲、鎖定會打斷等待。沒有真的睡 7–30 秒。
+
+Logic self-test 可在 Linux 跑。Windows runtime acceptance 尚未在這次環境執行。
+
+## Final status
+
+程式與文件已完成。Windows 實機接受測試未跑。
+
+---
+
 # Important Debugging Lessons
 
 1. Linux self-test 不等於 Windows acceptance。
@@ -509,6 +538,7 @@ C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
 12. Group task principal 不能再搭配 `InteractiveToken`；建立失敗必須讓 installer 失敗。
 13. Recovery worker 週期是 300 秒。2026-10-05 短於 5 分鐘的觀察不能直接判定補傳失敗；2026-10-06 完整週期實測已確認由舊到新補傳，成功後刪除本機 Cache。
 14. Server 設定 GUI 只寫 JSON。正在跑的 Server 要重新啟動才套用，不要為了 live reload 重構啟動流程。
+15. Client startup delay 只作用第一次截圖。不要把 7–30 秒套到後續 interval 或 recovery。
 
 ---
 
@@ -530,5 +560,10 @@ Phase 8-A Server configuration GUI: implemented
   five existing settings only; port 55550 not editable
   save writes server_config.json; restart Server to apply
   Windows installer rebuild not run in this environment
+Phase 8-B Client startup capture delay: implemented
+  one random 7-30 second delay per process start
+  first capture only; later captures use screenshot_interval
+  recovery remains 300 seconds
+  Windows runtime acceptance: not run
 Release: not created
 ```

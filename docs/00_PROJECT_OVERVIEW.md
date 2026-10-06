@@ -31,6 +31,8 @@ Phase 1–7 已完成，並於 2026-10-05 通過 Windows 安裝與 Client → Se
 
 Phase 8-A 已加入本機 Server Configuration GUI。它只設定 `storage_root`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`、`server_image_retention_days`，寫入 `C:\ProgramData\ScreenshotServer\server_config.json`。Save 之後要重新啟動 Screenshot Server 才生效。開發時執行 `python server_config_gui.py`；安裝後執行 `ScreenshotServerConfig.exe`，或從開始功能表的 Screenshot Server Configuration 開啟。Port 55550 不是 GUI 設定。
 
+Phase 8-B：每次 Client process 啟動產生一次 7–30 秒隨機延遲，只作用於第一次截圖。第一次完成後恢復固定 `screenshot_interval`。不是每次截圖隨機，不是設定檔欄位，不改 Cache recovery，也不改 Lock / Sleep / Wake。
+
 仍未做：Client 身分驗證、TLS、多 Client 管理介面。
 
 ## 3. Current files

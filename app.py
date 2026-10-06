@@ -13,6 +13,7 @@ import json
 import logging
 import logging.handlers
 import os
+import random
 import socket
 import sys
 import threading
@@ -29,6 +30,8 @@ UPLOAD_TIMEOUT_SECONDS = 5
 SERVER_PORT = 55550
 CACHE_RETENTION_DAYS = 3
 RECOVERY_INTERVAL_SECONDS = 300
+STARTUP_CAPTURE_DELAY_MIN_SECONDS = 7
+STARTUP_CAPTURE_DELAY_MAX_SECONDS = 30
 CACHE_ROOT = Path(r"C:\ProgramData\ScreenshotClient\Cache")
 CLIENT_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotClient")
 CLIENT_CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotClient\config.json")
@@ -484,6 +487,30 @@ def write_test_jpeg(output_dir: Path, quality: int) -> Path:
     return destination
 
 
+def startup_capture_delay_seconds(rng: random.Random | None = None) -> int:
+    """One inclusive 7-30 second delay for this process start. Not a config value."""
+    chooser = rng if rng is not None else random
+    return chooser.randint(STARTUP_CAPTURE_DELAY_MIN_SECONDS, STARTUP_CAPTURE_DELAY_MAX_SECONDS)
+
+
+def first_capture_times(started_at: datetime, delay_seconds: int, interval_seconds: int) -> tuple[datetime, datetime]:
+    first = started_at + timedelta(seconds=delay_seconds)
+    return first, first + timedelta(seconds=interval_seconds)
+
+
+def wait_startup_capture_delay(client_state, delay_seconds: float) -> bool:
+    """Wait without blocking Windows state events. False means do not capture yet."""
+    deadline = time.monotonic() + delay_seconds
+    while True:
+        if not client_state.capture_enabled:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return client_state.capture_enabled
+        if client_state.wait_until_disabled(remaining):
+            return False
+
+
 def handle_capture(server_ip: str, quality: int) -> None:
     hostname, username = client_identity()
     filename, jpeg, _captured_at = capture_jpeg(quality)
@@ -518,7 +545,19 @@ def run_forever() -> None:
         cli_overrides["quality"],
         client_state.capture_enabled,
     )
+    startup_started = datetime.now()
+    startup_delay = startup_capture_delay_seconds()
+    first_scheduled, _following = first_capture_times(
+        startup_started,
+        startup_delay,
+        initial["screenshot_interval"],
+    )
+    logging.info("Client startup time: %s", startup_started.strftime("%Y-%m-%d %H:%M:%S"))
+    logging.info("Startup capture delay: %s seconds", startup_delay)
+    logging.info("First capture scheduled: %s", first_scheduled.strftime("%Y-%m-%d %H:%M:%S"))
+    logging.info("First capture scheduled after startup delay")
     _worker, _stop = start_recovery_worker(initial["server_ip"])
+    startup_delay_pending = True
     resumed = False
     while True:
         runtime = effective_runtime()
@@ -528,7 +567,14 @@ def run_forever() -> None:
         if not client_state.capture_enabled:
             client_state.wait_until_enabled()
             resumed = True
+        if startup_delay_pending and not resumed and client_state.capture_enabled:
+            startup_delay_pending = False
+            if not wait_startup_capture_delay(client_state, startup_delay):
+                logging.info("Startup capture delay interrupted by session or power state")
+                resumed = True
+                continue
         if resumed:
+            startup_delay_pending = False
             resumed = False
             if client_state.wait_until_disabled(interval_seconds):
                 continue
@@ -588,6 +634,71 @@ def run_self_test() -> None:
     if first is None or second is None or len(names) != 2 or not all(name.endswith(".LOG") and len(name) == 22 for name in names):
         raise AssertionError(f"session logs were not created: {names}")
     close_logging()
+    run_startup_delay_self_test()
+
+
+def run_startup_delay_self_test() -> None:
+    from windows_events import ClientState
+
+    if RECOVERY_INTERVAL_SECONDS != 300 or SERVER_PORT != 55550:
+        raise AssertionError("startup delay work changed recovery interval or port")
+    if "startup_delay" in DEFAULT_CLIENT_CONFIG:
+        raise AssertionError("startup delay became a config field")
+    samples = [startup_capture_delay_seconds() for _ in range(200)]
+    if any(value < 7 or value > 30 for value in samples):
+        raise AssertionError(f"startup delay outside 7-30: {samples}")
+    if startup_capture_delay_seconds(random.Random(1)) == startup_capture_delay_seconds(random.Random(2)):
+        # Different seeds may still collide once. A longer sequence must not be fixed.
+        pass
+    first_seed = [startup_capture_delay_seconds(random.Random(7)) for _ in range(5)]
+    second_seed = [startup_capture_delay_seconds(random.Random(8)) for _ in range(5)]
+    if first_seed[0] < 7 or first_seed[0] > 30 or first_seed == second_seed:
+        raise AssertionError(f"restart did not draw a new delay: {first_seed} {second_seed}")
+
+    class Fixed:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def randint(self, low: int, high: int) -> int:
+            if low != 7 or high != 30 or not low <= self.value <= high:
+                raise AssertionError(f"delay bounds changed: {low} {high} {self.value}")
+            return self.value
+
+    if startup_capture_delay_seconds(Fixed(7)) != 7 or startup_capture_delay_seconds(Fixed(30)) != 30:
+        raise AssertionError("inclusive 7 and 30 were rejected")
+    interval = effective_runtime()["screenshot_interval"]
+    startup_capture_delay_seconds()
+    if effective_runtime()["screenshot_interval"] != interval:
+        raise AssertionError("startup delay changed screenshot_interval")
+    started = datetime(2026, 10, 6, 21, 0, 0)
+    first, second = first_capture_times(started, 13, 20)
+    third = second + timedelta(seconds=20)
+    if first != datetime(2026, 10, 6, 21, 0, 13) or second != datetime(2026, 10, 6, 21, 0, 33):
+        raise AssertionError(f"first capture did not return to fixed interval: {first} {second}")
+    if third != datetime(2026, 10, 6, 21, 0, 53) or (second - first).total_seconds() == 13:
+        raise AssertionError("startup delay was applied to later captures")
+    enabled = ClientState(enabled=True)
+    began = time.monotonic()
+    if not wait_startup_capture_delay(enabled, 0.05):
+        raise AssertionError("enabled startup delay did not elapse")
+    if time.monotonic() - began > 1:
+        raise AssertionError("startup delay self-test slept too long")
+    disabled = ClientState(enabled=False)
+    if wait_startup_capture_delay(disabled, 30):
+        raise AssertionError("disabled state was allowed to finish startup delay")
+    interrupted = ClientState(enabled=True)
+
+    def disable_soon() -> None:
+        time.sleep(0.05)
+        interrupted.set_initial(False, False, False, False)
+
+    threading.Thread(target=disable_soon, daemon=True).start()
+    began = time.monotonic()
+    if wait_startup_capture_delay(interrupted, 30):
+        raise AssertionError("lock during startup delay still allowed capture")
+    if time.monotonic() - began > 1:
+        raise AssertionError("interrupted startup delay blocked instead of returning")
+    logging.info("startup delay self-test passed")
 
 
 def run_cache_self_test(cache_root: Path) -> None:

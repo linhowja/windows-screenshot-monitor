@@ -14,6 +14,7 @@
 | 重複檔名 | 同一身分、日期、檔名已存在就回 HTTP 200，不覆蓋、不加序號。 |
 | 5 分鐘 Cache 補傳 | 300 秒週期已於 2026-10-06 完成實測。Server 中斷期間的 Cache 由舊到新補傳，成功後刪除本機檔案。 |
 | Server GUI | Phase 8-A 本機設定視窗已實作。只改 5 個既有設定，寫入 `server_config.json`，重新啟動 Server 後生效。不要補做 Web UI。 |
+| Client 第一次截圖 | Phase 8-B：每次 process 啟動隨機等 7–30 秒後才第一張。之後固定 interval。不是設定項。 |
 
 ## 仍未做，不要當成已經納入 MVP
 
