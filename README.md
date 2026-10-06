@@ -51,7 +51,7 @@ Windows Client
 
 ## 規格與進度
 
-現行說明在 [`mvp-v1`](https://github.com/linhowja/windows-screenshot-monitor/tree/mvp-v1)。Phase 1–7 已通過 Windows 實機驗證，記錄在 [`docs/05_PHASE_HISTORY.md`](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/05_PHASE_HISTORY.md)。尚未發 release tag。五分鐘 Cache 補傳的實地觀察仍待確認。
+現行說明在 [`mvp-v1`](https://github.com/linhowja/windows-screenshot-monitor/tree/mvp-v1)。Phase 1–7 已通過 Windows 實機驗證，記錄在 [`docs/05_PHASE_HISTORY.md`](https://github.com/linhowja/windows-screenshot-monitor/blob/mvp-v1/docs/05_PHASE_HISTORY.md)。300 秒 Cache 補傳已完成實測：Server 中斷期間的 Cache 由舊到新補傳，成功後刪除本機檔案。尚未發 release tag。
 
 ## 建議閱讀順序
 
