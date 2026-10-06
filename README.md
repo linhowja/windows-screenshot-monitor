@@ -44,13 +44,13 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 
 ## 現在做到哪
 
-此分支是目前實作。Phase 1–7 已通過 Windows 實機驗證，細節在 [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)。
+此分支是目前實作。Phase 1–7 已通過 Windows 實機驗證，細節在 [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)。Cache recovery 的 300 秒週期已完成實測：Server 中斷期間產生的 Cache 檔案，在週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
 
 | Phase | 範圍 | 狀態 |
 | --- | --- | --- |
 | 1 | 截圖與灰階 JPEG | 通過；後來改為保留原始解析度，不再縮成 25% |
 | 2 | HTTP 上傳、寫入確認、5 秒逾時 | 通過 |
-| 3 | 失敗進 Cache、補傳、重複上傳保護 | 通過；5 分鐘補傳的實地觀察仍待確認 |
+| 3 | 失敗進 Cache、補傳、重複上傳保護 | 通過；300 秒補傳已完成實測，由舊到新補傳，成功後刪除本機 Cache |
 | 4 | 鎖定、睡眠、解鎖、喚醒 | 通過 |
 | 5 | Server 設定與 Last Known Good | 通過 |
 | 6 | 每日啟動時人工確認後才刪舊圖 | 通過 |

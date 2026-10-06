@@ -12,6 +12,7 @@
 | 設定同步 | 成功上傳的 HTTP 200 帶回最新 Client 設定。沒有單獨的 config-only API。 |
 | 日誌 | 目前使用者 Documents，每次啟動一個檔。解除安裝不刪。 |
 | 重複檔名 | 同一身分、日期、檔名已存在就回 HTTP 200，不覆蓋、不加序號。 |
+| 5 分鐘 Cache 補傳 | 300 秒週期已於 2026-10-06 完成實測。Server 中斷期間的 Cache 由舊到新補傳，成功後刪除本機檔案。 |
 | Server GUI | 仍未做。不要補做 Web UI。 |
 
 ## 仍未做，不要當成已經納入 MVP
@@ -20,7 +21,6 @@
 - Client registration、token、密碼、TLS、來源 IP 限制、多 Client 管理介面。
 - Cache 特殊 ACL。
 - release tag。
-- 5 分鐘 Cache 補傳的實地觀察。程式已有 300 秒週期，但這項現場觀察仍是 PENDING。
 
 ## 現在怎麼接手
 

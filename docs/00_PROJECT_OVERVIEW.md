@@ -16,7 +16,7 @@
 
 實作分支是 `mvp-v1`。`main` 仍是從 TorCap 匯入的基準加上規格文件，不是目前程式。
 
-Phase 1–7 已完成，並於 2026-10-05 通過 Windows 安裝與 Client → Server 部署驗證。尚未發 release tag。Cache 每 5 分鐘補傳的實地觀察仍待確認；短於 5 分鐘的觀察不能直接判定補傳失敗。
+Phase 1–7 已完成，並於 2026-10-05 通過 Windows 安裝與 Client → Server 部署驗證。Cache recovery 的 300 秒週期已於 2026-10-06 完成實測：Server 中斷期間產生的 Cache 檔案，在 recovery 週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。尚未發 release tag。
 
 已經定案、不要再按開工文件猜的點：
 

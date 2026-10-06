@@ -24,7 +24,7 @@
 | Phase 6 | Retention check + manual confirmation | PASS | `668d16bb239cd11e0eb4ad0ce99c29adc03b1366` | PASS |
 | Phase 7 | Installer / Deployment | PASS | `06c9cf6acc14bd02a3da066a9b0d6608f92c0325` | PASS |
 
-Phase 7 的 installer / deployment 與 Windows Client → Server 整合已通過。Server GUI、authentication、TLS 與 multi-client management 仍未實作。Cache 的 5 分鐘實地補傳觀察仍是 PENDING FIELD TEST。
+Phase 7 的 installer / deployment 與 Windows Client → Server 整合已通過。Server GUI、authentication、TLS 與 multi-client management 仍未實作。Cache 的 300 秒實地補傳已於 2026-10-06 完成：Server 中斷期間產生的 Cache 檔案，在 recovery 週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
 
 ---
 
@@ -186,9 +186,13 @@ Cache binary write 的 Windows 修正在 Phase 2 的 `21d72d4d9cd8`。Phase 3 �
 
 Cache self-test 覆蓋成功不留檔、失敗進 Cache、順序、Server 恢復後清空、Server 仍不可用時保留、duplicate recovery、`.tmp` 忽略與 3 天 retention。
 
+## Field observation
+
+2026-10-05 的部署驗證只觀察到 Server 恢復後、未滿 300 秒時沒有立即補傳，當時不能判定失敗。2026-10-06 已完成完整週期實測：Server 中斷期間產生的 Cache 檔案，在 recovery 週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
+
 ## Final status
 
-PASS。
+PASS。300 秒 recovery 的實地觀察已於 2026-10-06 完成。
 
 ## Important commits
 
@@ -430,7 +434,7 @@ Documents\ScreenshotServer\Logs\YYYYMMDD_HHMMSS_CC.LOG
 - Client log 有 Capture、JPEG encode、HTTP 200、Uploaded discarded。Capture → JPEG → HTTP → Server → File Storage 整條成功。
 - Server 中斷時 Client 不停止，失敗圖片寫入 `C:\ProgramData\ScreenshotClient\Cache\YYYYMMDD\`。Server 恢復後新截圖可以上傳。
 
-Recovery worker 的設計週期是 300 秒。這次 Server 恢復後沒有立即補傳舊 Cache，等待時間不到 5 分鐘，不能直接判定為 Bug。5 分鐘實地補傳留待實際工作環境觀察。
+Recovery worker 的設計週期是 300 秒。2026-10-05 這次 Server 恢復後沒有立即補傳舊 Cache，等待時間不到 5 分鐘，當時不能直接判定為 Bug。後續完整週期實測已於 2026-10-06 完成：Server 中斷期間產生的 Cache 檔案，在 recovery 週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
 
 ## Final status
 
@@ -438,9 +442,9 @@ Recovery worker 的設計週期是 300 秒。這次 Server 恢復後沒有立即
 - Windows real-machine Client → Server integration：PASS。
 - Cache offline storage：PASS。
 - Recovery mechanism：已實作，既有 self-test 通過。
-- Real-world 5-minute recovery observation：PENDING FIELD TEST。
+- Real-world 5-minute recovery observation：PASS。2026-10-06 實測確認，Server 中斷期間的 Cache 在 300 秒週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
 
-目前已達到可以進入實際工作環境部署測試的程度。Server GUI、authentication、TLS 與 multi-client management 仍未做。
+Windows Client / Server 部署與整合測試已完成。Server GUI、authentication、TLS 與 multi-client management 仍未做。
 
 ## Important commits
 
@@ -467,7 +471,7 @@ Recovery worker 的設計週期是 300 秒。這次 Server 恢復後沒有立即
 9. Atomic write 必須處理殘留 `.tmp`。
 11. Inno Setup 必須明確使用 x64-compatible mode，否則 `{autopf}` 會進 Program Files (x86)。
 12. Group task principal 不能再搭配 `InteractiveToken`；建立失敗必須讓 installer 失敗。
-13. Recovery worker 週期是 300 秒。短於 5 分鐘的觀察不能直接判定補傳失敗。
+13. Recovery worker 週期是 300 秒。2026-10-05 短於 5 分鐘的觀察不能直接判定補傳失敗；2026-10-06 完整週期實測已確認由舊到新補傳，成功後刪除本機 Cache。
 
 ---
 
@@ -483,6 +487,8 @@ main:
 b01213eee4902762badc848d5196745ef194af63
 
 Phase 1-7 installer/deployment: completed
-5-minute cache recovery field observation: pending
+5-minute cache recovery field observation: completed 2026-10-06
+  Server interruption cache retried oldest to newest after the 300-second cycle
+  local cache files deleted after successful upload
 Release: not created
 ```
