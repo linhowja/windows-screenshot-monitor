@@ -458,6 +458,42 @@ Windows Client / Server 部署與整合測試已完成。Server GUI、authentica
 
 ---
 
+# Phase 8-A — Server Configuration GUI
+
+## Original goal
+
+在現有 Windows Server 上加一個本機設定視窗，只查看與修改原本就允許的 5 個設定。不是 Web UI，也不改 Client 截圖時序。
+
+## Implementation
+
+- 新增 `server_config_gui.py`。使用 Python 標準函式庫 tkinter，沒有另加 GUI framework。
+- 可設定：`storage_root`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`、`server_image_retention_days`。
+- 不開放 Listen Address、Port `55550`、Flask / Waitress、API endpoint 或其他內部常數。
+- 設定檔仍是 `C:\ProgramData\ScreenshotServer\server_config.json`。GUI 啟動只讀取，不存在時顯示 Server 預設值，不先寫檔。
+- Save 沿用 Server 既有驗證範圍：interval、cache days、retention days 必須是大於 0 的整數；JPEG quality 是 20–100；storage root 不能是空白。失敗不寫檔。
+- Close 與關閉視窗不寫檔。既有未知欄位會保留。
+- Server 仍在啟動時讀取設定。GUI 儲存後要重新啟動 Screenshot Server 才套用，沒有做 live reload。
+- 安裝檔新增 `ScreenshotServerConfig.exe` 與開始功能表捷徑。Client installer 沒有合併。
+
+## How to start
+
+```text
+python server_config_gui.py
+C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
+```
+
+開始功能表名稱是 Screenshot Server Configuration。
+
+## Tests
+
+`python server_config_gui.py --self-test` 覆蓋缺檔不寫入、讀取現值、5 個欄位寫入、錯誤輸入拒絕、Close 不寫、重新載入後讀到新值、殘留 `.tmp` 不阻擋寫入。`python server.py --self-test` 確認上傳與 retention 仍通過。這個環境沒有 libtk，視窗本身無法在此開啟；Windows 正式 Python 含 tkinter。
+
+## Final status
+
+程式與文件已完成。Windows 安裝檔重新編譯與視窗點擊尚未在這台 Linux 環境執行。
+
+---
+
 # Important Debugging Lessons
 
 1. Linux self-test 不等於 Windows acceptance。
@@ -472,6 +508,7 @@ Windows Client / Server 部署與整合測試已完成。Server GUI、authentica
 11. Inno Setup 必須明確使用 x64-compatible mode，否則 `{autopf}` 會進 Program Files (x86)。
 12. Group task principal 不能再搭配 `InteractiveToken`；建立失敗必須讓 installer 失敗。
 13. Recovery worker 週期是 300 秒。2026-10-05 短於 5 分鐘的觀察不能直接判定補傳失敗；2026-10-06 完整週期實測已確認由舊到新補傳，成功後刪除本機 Cache。
+14. Server 設定 GUI 只寫 JSON。正在跑的 Server 要重新啟動才套用，不要為了 live reload 重構啟動流程。
 
 ---
 
@@ -489,5 +526,9 @@ Windows Client / Server integration: completed
 5-minute cache recovery field observation: completed 2026-10-06
   Server interruption cache retried oldest to newest after the 300-second cycle
   local cache files deleted after successful upload
+Phase 8-A Server configuration GUI: implemented
+  five existing settings only; port 55550 not editable
+  save writes server_config.json; restart Server to apply
+  Windows installer rebuild not run in this environment
 Release: not created
 ```

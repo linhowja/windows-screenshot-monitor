@@ -29,13 +29,16 @@ Phase 1–7 已完成，並於 2026-10-05 通過 Windows 安裝與 Client → Se
 - 日誌在目前使用者的 `Documents\ScreenshotClient\Logs` 與 `Documents\ScreenshotServer\Logs`，每次啟動一個檔。
 - HTTP runtime 依賴是 Flask app 加 Waitress，不使用 Flask development server 當正式服務。
 
-仍未做：Server 設定 GUI、Client 身分驗證、TLS、多 Client 管理介面。
+Phase 8-A 已加入本機 Server Configuration GUI。它只設定 `storage_root`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`、`server_image_retention_days`，寫入 `C:\ProgramData\ScreenshotServer\server_config.json`。Save 之後要重新啟動 Screenshot Server 才生效。開發時執行 `python server_config_gui.py`；安裝後執行 `ScreenshotServerConfig.exe`，或從開始功能表的 Screenshot Server Configuration 開啟。Port 55550 不是 GUI 設定。
+
+仍未做：Client 身分驗證、TLS、多 Client 管理介面。
 
 ## 3. Current files
 
 ```text
 app.py                         Client
 server.py                      Server。現在要跑這個
+server_config_gui.py           Server 設定視窗。安裝後是 ScreenshotServerConfig.exe
 windows_events.py              登入、鎖定、睡眠、喚醒
 packaging/                     PyInstaller 與 Inno Setup
 server_config.json             開發用 Server 預設

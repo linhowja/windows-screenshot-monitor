@@ -8,6 +8,7 @@
 | --- | --- |
 | `app.py` | 已改成 Client。不再走 Tor、不再縮 25%。 |
 | `server.py` | 新增。這才是 Windows Server。 |
+| `server_config_gui.py` | Phase 8-A 新增。本機設定視窗，不是 Web UI。 |
 | `windows_events.py` | 新增。處理登入、鎖定、睡眠、喚醒。 |
 | `packaging/` | 新增。PyInstaller 與 Inno Setup。 |
 | `server_config.json` | 已改成 storage root、interval、quality、cache days、retention days。沒有 port 欄位。 |

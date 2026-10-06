@@ -58,6 +58,7 @@ Gemini 只 review，不與 Grok 同時改同一檔案。優先看 bug、Windows 
 | 5 | Server 設定與 Last Known Good | 通過 |
 | 6 | 當初寫自動清理 | 通過；改為每日人工確認 |
 | 7 | 安裝、工作排程、防火牆、解除安裝 | 通過 Windows 部署驗證 |
+| 8-A | Server 本機設定 GUI | 已實作；5 個既有設定，儲存後需重新啟動 Server |
 
 ## 4. Review rule
 

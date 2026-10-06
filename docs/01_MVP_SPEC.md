@@ -507,6 +507,8 @@ Server 本機可以有一個極簡設定介面，用來修改：
 
 不做圖片瀏覽功能。
 
+Phase 8-A 已實作這個本機視窗，名稱是 `ScreenshotServerConfig.exe`。它只暴露上面 5 個設定，寫入 `C:\ProgramData\ScreenshotServer\server_config.json`。不提供 Listen Address、Port `55550`、API 或服務核心設定。Server 在啟動時讀取設定；GUI 儲存後要重新啟動 Server 才套用。Close 不寫設定。
+
 ## 23. Firewall
 
 ### Server
@@ -560,6 +562,7 @@ Port 固定 55550。
 - 建立 server config
 - 建立 Firewall rule
 - 建立 Windows uninstall information
+- 安裝 `ScreenshotServerConfig.exe` 與開始功能表捷徑
 
 ### Uninstall
 

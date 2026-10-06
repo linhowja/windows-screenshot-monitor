@@ -1,6 +1,6 @@
 [Setup]
 AppName=Windows Screenshot Monitor Server
-AppVersion=0.7
+AppVersion=0.8
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 DefaultDirName={autopf}\Windows Screenshot Monitor\Server
@@ -11,8 +11,12 @@ UninstallDisplayIcon={app}\ScreenshotServer.exe
 
 [Files]
 Source: "..\dist\ScreenshotServer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ScreenshotServerConfig.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "server_install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "server_uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\Windows Screenshot Monitor\Screenshot Server Configuration"; Filename: "{app}\ScreenshotServerConfig.exe"; Comment: "Edit server settings. Restart Screenshot Server after saving."
 
 [Code]
 var

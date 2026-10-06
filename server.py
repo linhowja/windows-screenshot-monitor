@@ -133,6 +133,7 @@ def sanitize_server_config(raw: object) -> dict:
 def save_server_config(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
+    temporary.unlink(missing_ok=True)
     data = json.dumps(payload, indent=2).encode("utf-8")
     binary_flag = getattr(os, "O_BINARY", 0)
     fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
@@ -165,7 +166,10 @@ def load_server_config(path: Path | None = None, storage_override: Path | None =
     validated = sanitize_server_config(raw)
     if storage_override is not None:
         validated["storage_root"] = str(storage_override)
-    save_server_config(path, validated)
+    extra = {}
+    if isinstance(raw, dict):
+        extra = {key: value for key, value in raw.items() if key not in DEFAULT_SERVER_CONFIG}
+    save_server_config(path, {**validated, **extra})
     with config_lock:
         server_config = validated
     configure_storage(Path(validated["storage_root"]))

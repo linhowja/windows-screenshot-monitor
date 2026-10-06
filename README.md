@@ -44,7 +44,7 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 
 ## 現在做到哪
 
-此分支是目前實作。Phase 1–7 已通過 Windows 實機驗證，細節在 [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)。Cache recovery 的 300 秒週期已完成實測：Server 中斷期間產生的 Cache 檔案，在週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。
+此分支是目前實作。Phase 1–7 已通過 Windows 實機驗證，細節在 [`docs/05_PHASE_HISTORY.md`](docs/05_PHASE_HISTORY.md)。Cache recovery 的 300 秒週期已完成實測：Server 中斷期間產生的 Cache 檔案，在週期觸發後由舊到新補傳，成功後刪除本機 Cache 檔案。Phase 8-A 加入本機 Server 設定 GUI，不是 Web UI。
 
 | Phase | 範圍 | 狀態 |
 | --- | --- | --- |
@@ -55,8 +55,9 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 | 5 | Server 設定與 Last Known Good | 通過 |
 | 6 | 每日啟動時人工確認後才刪舊圖 | 通過 |
 | 7 | 安裝、登入工作、防火牆、解除安裝 | 通過 Windows 部署驗證 |
+| 8-A | Server 本機設定 GUI | 已實作；儲存後需重新啟動 Server |
 
-尚未做：Server 設定 GUI、身分驗證、TLS、多 Client 管理介面。尚未發 release tag。
+尚未做：身分驗證、TLS、多 Client 管理介面。尚未發 release tag。Server 設定 GUI 已於 Phase 8-A 實作，見下方啟動方式。
 
 ## 程式在哪
 
@@ -64,6 +65,7 @@ Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢�
 | --- | --- |
 | `app.py` | Windows Client：截圖、壓縮、上傳、Cache |
 | `server.py` | Windows Server：接收上傳、寫檔、設定、保留檢查 |
+| `server_config_gui.py` | Server 本機設定視窗。開發時執行這個；安裝後是 `ScreenshotServerConfig.exe` |
 | `windows_events.py` | 登入、鎖定、睡眠與喚醒 |
 | `packaging/` | PyInstaller 與 Inno Setup：`ScreenshotClient.exe`、`ScreenshotServer.exe` |
 | `tor_server.py` | 舊 TorCap 伺服器，不要當成現在的 Server |
@@ -82,6 +84,15 @@ Documents\ScreenshotServer\Logs
 ```
 
 Server 安裝時建立入站規則 `Screenshot Server`：TCP 55550 Allow。Client 不建入站規則。解除安裝預設不刪圖片與 Documents 日誌。
+
+Server 設定 GUI 只改這 5 項：`storage_root`、`screenshot_interval`、`jpeg_quality`、`client_cache_days`、`server_image_retention_days`。設定檔是 `C:\ProgramData\ScreenshotServer\server_config.json`。Port `55550` 不能在 GUI 改。Save 寫入設定檔；正在跑的 Server 要重新啟動後才套用。啟動方式：
+
+```text
+python server_config_gui.py
+C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
+```
+
+開始功能表也有 `Screenshot Server Configuration`。Close 不寫設定。
 
 建置說明見 [`packaging/BUILD.txt`](packaging/BUILD.txt)。
 
