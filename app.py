@@ -1,1 +1,1 @@
-PLACEHOLDER
+$(cat /tmp/app.py)
