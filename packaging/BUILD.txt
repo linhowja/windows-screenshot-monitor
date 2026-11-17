@@ -4,10 +4,12 @@
 # Build on Windows 64-bit from the repository root:
 #   py -3 -m pip install -r requirements.txt pyinstaller
 #   py -3 -m PyInstaller packaging/client.spec
+#   py -3 -m PyInstaller packaging/client_config.spec
 #   py -3 -m PyInstaller packaging/server.spec
 #   py -3 -m PyInstaller packaging/server_config.spec
 # Output:
 #   dist/ScreenshotClient.exe
+#   dist/ScreenshotClientConfig.exe
 #   dist/ScreenshotServer.exe
 #   dist/ScreenshotServerConfig.exe
 #
@@ -23,10 +25,12 @@
 # Runtime files are not stored beside the executable.
 # Client config and cache use C:\ProgramData\ScreenshotClient.
 # Server config, retention state, and install manifest use C:\ProgramData\ScreenshotServer.
-# ScreenshotServerConfig.exe is the desktop settings window. It is installed with the Server,
-# not the Client. Saving writes server_config.json; restart Screenshot Server to apply it.
+# ScreenshotServerConfig.exe is the server settings window. ScreenshotClientConfig.exe
+# is the client settings window. Each is installed with its own program, not the other.
+# Saving writes that side's JSON file. Restart the matching program after saving.
 # Port 55550 is not a GUI setting. Windows Python includes tkinter; do not exclude it from
-# packaging/server_config.spec. The server service executable still excludes tkinter.
+# packaging/server_config.spec or packaging/client_config.spec. The capture and server
+# service executables still exclude tkinter.
 # Logs are created on each process start under the current user's Documents folder:
 #   Documents\ScreenshotClient\Logs\YYYYMMDD_HHMMSS_CC.LOG
 #   Documents\ScreenshotServer\Logs\YYYYMMDD_HHMMSS_CC.LOG
