@@ -133,7 +133,7 @@ def load_client_config(server_ip: str | None = None) -> dict:
     raw: object = None
     if active_client_config_path.exists():
         try:
-            raw = json.loads(active_client_config_path.read_text(encoding="utf-8"))
+            raw = json.loads(active_client_config_path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             logging.error("Client config is unreadable; using defaults: %s", exc)
     validated = _valid_client_fields(raw)
@@ -722,11 +722,12 @@ def run_cache_self_test(cache_root: Path) -> None:
     load_client_config("127.0.0.1")
     claimed_cache_files.clear()
     jpeg = process_screenshot(PilImage.new("RGB", (1920, 1080), (40, 80, 120)))
+    day = DateTime.now().strftime("%Y%m%d")
     names = [
-        "20261003_162000_10.jpg",
-        "20261003_162000_20.jpg",
-        "20261003_162000_30.jpg",
-        "20261003_162000_40.jpg",
+        f"{day}_162000_10.jpg",
+        f"{day}_162000_20.jpg",
+        f"{day}_162000_30.jpg",
+        f"{day}_162000_40.jpg",
     ]
 
     storage = Path(tempfile.mkdtemp(prefix="phase3-storage-"))
@@ -803,7 +804,7 @@ def run_cache_self_test(cache_root: Path) -> None:
             path.unlink()
         cache_jpeg(names[0], jpeg)
         original_upload("127.0.0.1", hostname, username, names[0], jpeg)
-        server_copy = storage / f"{hostname}_{username}" / "20261003" / names[0]
+        server_copy = storage / f"{hostname}_{username}" / day / names[0]
         if not server_copy.is_file():
             raise AssertionError("Test G server file missing")
         recover_cache("127.0.0.1")
@@ -812,7 +813,7 @@ def run_cache_self_test(cache_root: Path) -> None:
             raise AssertionError("Test G duplicate recovery failed")
 
         for index in range(50):
-            cache_jpeg(f"20261003_170000_{index:02d}.jpg", jpeg)
+            cache_jpeg(f"{day}_170000_{index:02d}.jpg", jpeg)
         started = time.perf_counter()
         release = threading.Event()
 
@@ -827,7 +828,7 @@ def run_cache_self_test(cache_root: Path) -> None:
         if not release.wait(2):
             raise AssertionError("Test H recovery did not start")
         normal_started = time.perf_counter()
-        cache_jpeg("20261003_180000_00.jpg", jpeg)
+        cache_jpeg(f"{day}_180000_00.jpg", jpeg)
         normal_elapsed = time.perf_counter() - normal_started
         if normal_elapsed > 0.5:
             raise AssertionError(f"Test H normal cache write blocked: {normal_elapsed:.2f}s")
@@ -838,8 +839,8 @@ def run_cache_self_test(cache_root: Path) -> None:
         for path in list(pending_cache_files()):
             path.unlink()
         for index in range(40):
-            cache_jpeg(f"20261003_171000_{index:02d}.jpg", jpeg)
-        normal_name = "20261003_181500_00.jpg"
+            cache_jpeg(f"{day}_171000_{index:02d}.jpg", jpeg)
+        normal_name = f"{day}_181500_00.jpg"
         release_capture = threading.Event()
         original_capture = capture_jpeg
 
@@ -870,7 +871,7 @@ def run_cache_self_test(cache_root: Path) -> None:
         globals()["capture_jpeg"] = original_capture
         globals()["upload_jpeg"] = original_upload
 
-        temporary = cache_root / "20261003" / "20261003_190000_00.jpg.tmp"
+        temporary = cache_root / day / f"{day}_190000_00.jpg.tmp"
         temporary.write_bytes(b"partial")
         pending = [path.name for path in pending_cache_files()]
         if any(name.endswith(".tmp") for name in pending):
