@@ -379,6 +379,8 @@ def cache_jpeg(filename: str, jpeg: bytes) -> bool:
                 return True
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + ".tmp")
+            # Clear any residual .tmp so exclusive create cannot fail.
+            temporary.unlink(missing_ok=True)
             binary_flag = getattr(os, "O_BINARY", 0)
             fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | binary_flag)
             try:
