@@ -41,7 +41,7 @@ FIELD_SPECS = (
     (
         "client_cache_days",
         "Client Cache Retention (days)",
-        "正整數。沿用 Server 目前規則，0 或負數會被拒絕。",
+        "正整數。這是 Client 本機尚未上傳圖片的保留天數，預設 7。成功上傳後會傳給 Client。0 或負數會被拒絕。",
     ),
     (
         "server_image_retention_days",
