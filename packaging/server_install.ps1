@@ -27,7 +27,7 @@ if (-not $configExisted) {
         storage_root = $StorageRoot
         screenshot_interval = 20
         jpeg_quality = 40
-        client_cache_days = 3
+        client_cache_days = 7
         server_image_retention_days = 14
     }
     $utf8 = New-Object System.Text.UTF8Encoding $false
