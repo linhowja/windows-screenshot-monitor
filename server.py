@@ -30,7 +30,7 @@ DEFAULT_SERVER_CONFIG = {
     "storage_root": r"C:\ProgramData\ScreenshotServer\Storage",
     "screenshot_interval": 20,
     "jpeg_quality": 40,
-    "client_cache_days": 3,
+    "client_cache_days": 7,
     "server_image_retention_days": 14,
 }
 SERVER_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotServer")
@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
 
         config_path = Path(tempfile.mkdtemp(prefix="phase5-server-config-")) / "server_config.json"
         missing = load_server_config(config_path, storage_override=args.storage_root)
-        if missing["jpeg_quality"] != 40 or missing["server_image_retention_days"] != 14:
+        if missing["jpeg_quality"] != 40 or missing["client_cache_days"] != 7 or missing["server_image_retention_days"] != 14:
             raise AssertionError(f"default server config mismatch: {missing}")
         config_path.write_text("{not json", encoding="utf-8")
         recovered = load_server_config(config_path, storage_override=args.storage_root)
