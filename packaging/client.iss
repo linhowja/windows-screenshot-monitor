@@ -1,6 +1,6 @@
 [Setup]
 AppName=Windows Screenshot Monitor Client
-AppVersion=0.8
+AppVersion=0.9
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
@@ -8,7 +8,7 @@ DefaultDirName={autopf}\Windows Screenshot Monitor\Client
 DisableProgramGroupPage=yes
 WizardStyle=modern
 WizardSizePercent=150
-OutputBaseFilename=ScreenshotClientSetup
+OutputBaseFilename=ScreenshotClientSetup-0.9
 UninstallDisplayIcon={app}\ScreenshotClient.exe
 
 [Files]
