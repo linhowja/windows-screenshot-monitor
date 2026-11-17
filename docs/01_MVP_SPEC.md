@@ -259,7 +259,7 @@ HTTP 200
   "config": {
     "screenshot_interval": 20,
     "jpeg_quality": 40,
-    "client_cache_days": 3
+    "client_cache_days": 7
   }
 }
 ```
@@ -340,7 +340,7 @@ Cache\
 ### Client Cache retention
 
 - 由 Server 設定
-- 預設：3 Days
+- 預設：7 Days
 - 只針對尚未成功上傳的 Local Cache
 - 超過保留期限，自動刪除
 
