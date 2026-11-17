@@ -1,18 +1,24 @@
 [Setup]
 AppName=Windows Screenshot Monitor Client
-AppVersion=0.7
+AppVersion=0.8
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 DefaultDirName={autopf}\Windows Screenshot Monitor\Client
 DisableProgramGroupPage=yes
+WizardStyle=modern
+WizardSizePercent=150
 OutputBaseFilename=ScreenshotClientSetup
 UninstallDisplayIcon={app}\ScreenshotClient.exe
 
 [Files]
 Source: "..\dist\ScreenshotClient.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ScreenshotClientConfig.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\Windows Screenshot Monitor\Screenshot Client Configuration"; Filename: "{app}\ScreenshotClientConfig.exe"; Comment: "Edit this computer's server address and last known client settings."
 
 [Code]
 var
