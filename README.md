@@ -39,7 +39,7 @@ Server 不提供網頁。圖片直接用檔案總管的大圖示或超大圖示�
 
 ## 設定從哪裡來
 
-Server 是設定來源。預設為截圖間隔 20 秒、JPEG 品質 40、Client Cache 保留 3 天、Server 圖片保留 14 天。成功上傳的 HTTP 200 會順便回傳最新的 Client 設定。Server 離線時，Client 繼續用上一次成功的設定，不停止工作。
+Server 是設定來源。預設為截圖間隔 20 秒、JPEG 品質 40、Client Cache 保留 7 天、Server 圖片保留 14 天。Client Cache 天數在 Server 設定視窗修改，重新啟動 Server 後，下一次成功上傳會把新天數傳給 Client。Server 離線時，Client 繼續用上一次成功的設定，不停止工作。
 
 Server 圖片不會背景自動刪除。每個本機日期第一次啟動時檢查，確認後才刪除這次掃描到的候選。
 
