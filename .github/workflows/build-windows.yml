@@ -1,0 +1,40 @@
+name: Build Windows installers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build executables
+        run: |
+          python -m PyInstaller packaging/client.spec
+          python -m PyInstaller packaging/client_config.spec
+          python -m PyInstaller packaging/server.spec
+          python -m PyInstaller packaging/server_config.spec
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installers
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\client.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\server.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-screenshot-monitor-0.9
+          if-no-files-found: error
+          path: |
+            packaging/Output/ScreenshotClientSetup-0.9.exe
+            packaging/Output/ScreenshotServerSetup-0.9.exe
