@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -131,45 +132,94 @@ def save_settings(path: Path, values: dict) -> tuple[bool, str]:
     return True, RESTART_MESSAGE
 
 
+def _open_settings_window(title: str):
+    """Size the window from the screen and keep text readable on high-DPI displays."""
+    import tkinter as tk
+    from tkinter import font as tkfont
+    from tkinter import ttk
+
+    if os.name == "nt":
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    root = tk.Tk()
+    root.title(title)
+    root.update_idletasks()
+    screen_w = max(root.winfo_screenwidth(), 800)
+    screen_h = max(root.winfo_screenheight(), 600)
+    width = min(1100, max(760, int(screen_w * 0.58)))
+    height = min(860, max(620, int(screen_h * 0.72)))
+    root.geometry(f"{width}x{height}")
+    root.minsize(680, 520)
+    root.resizable(True, True)
+    for name in ("TkDefaultFont", "TkTextFont"):
+        try:
+            current = tkfont.nametofont(name)
+            size = abs(int(current.cget("size") or 10))
+            if size > 12:
+                current.configure(size=11)
+        except Exception:
+            pass
+    style = ttk.Style(root)
+    style.configure("Help.TLabel", foreground="#444444")
+    return root, tk, ttk
+
+
 def run_gui(path: Path) -> int:
     try:
-        import tkinter as tk
-        from tkinter import ttk
+        root, tk, ttk = _open_settings_window("Screenshot Server Configuration")
     except Exception as exc:
         logging.error("Server config GUI unavailable: %s", exc)
         print(f"Server configuration GUI unavailable: {exc}", file=sys.stderr)
         return 1
 
     values, status = read_server_config(path)
-    root = tk.Tk()
-    root.title("Screenshot Server Configuration")
-    # Larger default size and allow resizing so the form is usable on high-DPI or large-font systems.
-    root.geometry("780x560")
-    root.minsize(640, 480)
-    root.resizable(True, True)
-
-    # Configure grid weights so the content expands.
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
 
-    frame = ttk.Frame(root, padding=16)
-    frame.grid(row=0, column=0, sticky="nsew")
-    frame.columnconfigure(1, weight=1)
+    outer = ttk.Frame(root, padding=12)
+    outer.grid(row=0, column=0, sticky="nsew")
+    outer.columnconfigure(0, weight=1)
+    outer.rowconfigure(0, weight=1)
+
+    canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    frame = ttk.Frame(canvas, padding=16)
+    frame.columnconfigure(0, weight=1)
+    window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+
+    def sync_scroll(_event=None) -> None:
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.itemconfigure(window_id, width=max(canvas.winfo_width(), 1))
+
+    frame.bind("<Configure>", sync_scroll)
+    canvas.bind("<Configure>", sync_scroll)
 
     variables: dict[str, tk.StringVar] = {}
     for row, (key, label, help_text) in enumerate(FIELD_SPECS):
-        ttk.Label(frame, text=label).grid(row=row * 2, column=0, sticky="w", pady=(4, 2))
+        ttk.Label(frame, text=label).grid(row=row * 3, column=0, sticky="w", pady=(8, 2))
         variable = tk.StringVar(value=_display(values.get(key)))
         variables[key] = variable
-        entry = ttk.Entry(frame, textvariable=variable)
-        entry.grid(row=row * 2, column=1, sticky="ew", padx=(12, 0), pady=(4, 2))
-        ttk.Label(frame, text=help_text, wraplength=520).grid(
-            row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        ttk.Entry(frame, textvariable=variable).grid(row=row * 3 + 1, column=0, sticky="ew")
+        ttk.Label(frame, text=help_text, style="Help.TLabel", wraplength=680).grid(
+            row=row * 3 + 2, column=0, sticky="w", pady=(2, 6)
         )
 
+    footer = ttk.Frame(outer)
+    footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    footer.columnconfigure(0, weight=1)
     status_var = tk.StringVar(value=status)
-    status_label = ttk.Label(frame, textvariable=status_var, wraplength=700)
-    status_label.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 12))
+    ttk.Label(footer, textvariable=status_var, wraplength=680).grid(row=0, column=0, sticky="ew")
 
     def on_save() -> None:
         ok, message = save_settings(path, parse_form({key: variable.get() for key, variable in variables.items()}))
@@ -181,10 +231,10 @@ def run_gui(path: Path) -> int:
         logging.info("Server config GUI closed without saving")
         root.destroy()
 
-    buttons = ttk.Frame(frame)
-    buttons.grid(row=11, column=0, columnspan=2, sticky="e", pady=(4, 0))
-    ttk.Button(buttons, text="Save", command=on_save, width=10).grid(row=0, column=0, padx=(0, 8))
-    ttk.Button(buttons, text="Close", command=on_close, width=10).grid(row=0, column=1)
+    buttons = ttk.Frame(footer)
+    buttons.grid(row=1, column=0, sticky="e", pady=(8, 0))
+    ttk.Button(buttons, text="Save", command=on_save, width=12).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(buttons, text="Close", command=on_close, width=12).grid(row=0, column=1)
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
     return 0
