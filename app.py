@@ -28,7 +28,7 @@ DEFAULT_JPEG_QUALITY = 40
 DEFAULT_INTERVAL_SECONDS = 20
 UPLOAD_TIMEOUT_SECONDS = 5
 SERVER_PORT = 55550
-CACHE_RETENTION_DAYS = 3
+CACHE_RETENTION_DAYS = 7
 RECOVERY_INTERVAL_SECONDS = 300
 STARTUP_CAPTURE_DELAY_MIN_SECONDS = 7
 STARTUP_CAPTURE_DELAY_MAX_SECONDS = 30
@@ -878,7 +878,8 @@ def run_cache_self_test(cache_root: Path) -> None:
             raise AssertionError("Test I scanned a temporary file")
         temporary.unlink()
 
-        old_name = (DateTime.now() - timedelta(days=4)).strftime("%Y%m%d_010000_00.jpg")
+        retention_days = current_runtime()["client_cache_days"]
+        old_name = (DateTime.now() - timedelta(days=retention_days + 1)).strftime("%Y%m%d_010000_00.jpg")
         recent_name = DateTime.now().strftime("%Y%m%d_020000_00.jpg")
         cache_jpeg(old_name, jpeg)
         cache_jpeg(recent_name, jpeg)
@@ -999,7 +1000,7 @@ def run_session_self_test() -> None:
 def run_config_self_test(config_dir: Path) -> None:
     configure_client_config_path(config_dir / "config.json")
     first = load_client_config("10.0.0.8")
-    if first["screenshot_interval"] != 20 or first["jpeg_quality"] != 40 or first["server_ip"] != "10.0.0.8":
+    if first["screenshot_interval"] != 20 or first["jpeg_quality"] != 40 or first["client_cache_days"] != 7 or first["server_ip"] != "10.0.0.8":
         raise AssertionError(f"first startup config mismatch: {first}")
     reloaded = load_client_config()
     if reloaded != first:
