@@ -94,7 +94,7 @@ python server_config_gui.py
 C:\Program Files\Windows Screenshot Monitor\Server\ScreenshotServerConfig.exe
 ```
 
-開始功能表也有 `Screenshot Server Configuration`。Close 不寫設定。
+開始功能表也有 `Screenshot Server Configuration` 與 `Screenshot Client Configuration`。Close 不寫設定。Client 設定視窗寫入 `C:\ProgramData\ScreenshotClient\config.json`，可改 Server IPv4；間隔、品質與 Cache 天數在下次成功上傳後會被 Server 帶回的值覆寫。
 
 Client 每次 process 啟動只抽一次 7–30 秒整數延遲，等完才做第一次截圖。之後恢復 `screenshot_interval`。這不是每次截圖都隨機，也不是 Server 設定，不影響 300 秒 Cache recovery。鎖定或睡眠期間仍不截圖。
 
