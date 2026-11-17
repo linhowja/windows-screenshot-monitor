@@ -22,7 +22,7 @@ if (-not $configExisted) {
         server_port = 55550
         screenshot_interval = 20
         jpeg_quality = 40
-        client_cache_days = 3
+        client_cache_days = 7
     }
     $utf8 = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
