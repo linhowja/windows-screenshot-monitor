@@ -7,6 +7,8 @@ DefaultDirName={autopf}\Windows Screenshot Monitor\Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputBaseFilename=ScreenshotServerSetup
+WizardStyle=modern
+WizardSizePercent=150
 UninstallDisplayIcon={app}\ScreenshotServer.exe
 
 [Files]
