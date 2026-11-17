@@ -143,19 +143,33 @@ def run_gui(path: Path) -> int:
     values, status = read_server_config(path)
     root = tk.Tk()
     root.title("Screenshot Server Configuration")
-    root.resizable(False, False)
-    frame = ttk.Frame(root, padding=12)
+    # Larger default size and allow resizing so the form is usable on high-DPI or large-font systems.
+    root.geometry("780x560")
+    root.minsize(640, 480)
+    root.resizable(True, True)
+
+    # Configure grid weights so the content expands.
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+
+    frame = ttk.Frame(root, padding=16)
     frame.grid(row=0, column=0, sticky="nsew")
+    frame.columnconfigure(1, weight=1)
+
     variables: dict[str, tk.StringVar] = {}
     for row, (key, label, help_text) in enumerate(FIELD_SPECS):
-        ttk.Label(frame, text=label).grid(row=row * 2, column=0, sticky="w", pady=(0, 2))
+        ttk.Label(frame, text=label).grid(row=row * 2, column=0, sticky="w", pady=(4, 2))
         variable = tk.StringVar(value=_display(values.get(key)))
         variables[key] = variable
-        ttk.Entry(frame, textvariable=variable, width=52).grid(row=row * 2, column=1, sticky="ew", padx=(8, 0))
-        ttk.Label(frame, text=help_text, wraplength=420).grid(row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        entry = ttk.Entry(frame, textvariable=variable)
+        entry.grid(row=row * 2, column=1, sticky="ew", padx=(12, 0), pady=(4, 2))
+        ttk.Label(frame, text=help_text, wraplength=520).grid(
+            row=row * 2 + 1, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
 
     status_var = tk.StringVar(value=status)
-    ttk.Label(frame, textvariable=status_var, wraplength=640).grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 8))
+    status_label = ttk.Label(frame, textvariable=status_var, wraplength=700)
+    status_label.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 12))
 
     def on_save() -> None:
         ok, message = save_settings(path, parse_form({key: variable.get() for key, variable in variables.items()}))
@@ -168,9 +182,9 @@ def run_gui(path: Path) -> int:
         root.destroy()
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=11, column=0, columnspan=2, sticky="e")
-    ttk.Button(buttons, text="Save", command=on_save).grid(row=0, column=0, padx=(0, 8))
-    ttk.Button(buttons, text="Close", command=on_close).grid(row=0, column=1)
+    buttons.grid(row=11, column=0, columnspan=2, sticky="e", pady=(4, 0))
+    ttk.Button(buttons, text="Save", command=on_save, width=10).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(buttons, text="Close", command=on_close, width=10).grid(row=0, column=1)
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
     return 0
