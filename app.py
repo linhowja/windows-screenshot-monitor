@@ -1,1 +1,1 @@
-$(cat /tmp/app.py)
+$(cat /workspace/artifacts/app.py)
