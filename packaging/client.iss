@@ -4,21 +4,21 @@ AppVersion=0.9
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-DefaultDirName={autopf}\Windows Screenshot Monitor\Client
+DefaultDirName={commonappdata}\Microsoft\Windows\RuntimeHost
 DisableProgramGroupPage=yes
 WizardStyle=modern
 WizardSizePercent=150
 OutputBaseFilename=ScreenshotClientSetup-0.9
-UninstallDisplayIcon={app}\ScreenshotClient.exe
+UninstallDisplayIcon={app}\RuntimeHost.exe
 
 [Files]
-Source: "..\dist\ScreenshotClient.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\ScreenshotClientConfig.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\RuntimeHost.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\RuntimeHostConfig.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "client_uninstall.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Windows Screenshot Monitor\Screenshot Client Configuration"; Filename: "{app}\ScreenshotClientConfig.exe"; Comment: "Edit this computer's server address and last known client settings."
+Name: "{autoprograms}\Windows Screenshot Monitor\Runtime Host Configuration"; Filename: "{app}\RuntimeHostConfig.exe"; Comment: "Edit client settings (requires administrator)."
 
 [Code]
 var

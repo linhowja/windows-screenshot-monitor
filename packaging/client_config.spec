@@ -23,10 +23,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="ScreenshotClientConfig",
+    name="RuntimeHostConfig",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
+    uac_admin=True,
 )
