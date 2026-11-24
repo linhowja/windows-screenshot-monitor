@@ -402,3 +402,16 @@ py -3 -m PyInstaller packaging/server_config.spec
 - `runtime_state.json`：Users 可修改（讓 Client 程式能寫入 Server 推送的值）
 - 工作排程器任務檔：Users 只有讀取，不易停用或刪除
 - 設定程式要求管理員權限（UAC）
+
+
+## 下一版安裝要求（待實作）
+
+Client 安裝精靈在按「下一步」完成安裝前，必須先確認能連上所填的 Server：
+
+1. 使用者輸入 Server IPv4 後，安裝程式對該 IP 的 TCP 55550 做連線測試。
+2. 連不上則顯示錯誤，不允許進入下一步，也不寫入設定、不建立工作排程器。
+3. 連得上才繼續安裝，並寫入 `install_config.json`。
+
+原因：1.2 實機安裝時，安裝腳本中途中斷，`install_config.json` 沒寫入，Client 用預設 127.0.0.1，Server 收不到任何訊號。連線確認可避免裝完卻完全連不上。
+
+個人使用預設 Server IP：`172.16.0.200`。

@@ -28,7 +28,7 @@ procedure InitializeWizard;
 begin
   ServerIpPage := CreateInputQueryPage(wpWelcome, 'Server', 'Server IPv4', 'Port is fixed at 55550.');
   ServerIpPage.Add('Server IPv4:', False);
-  ServerIpPage.Values[0] := '192.168.1.10';
+  ServerIpPage.Values[0] := '172.16.0.200';
 end;
 
 function ServerIp(Param: String): String;
@@ -74,7 +74,7 @@ begin
   begin
     if not IsValidIPv4(ServerIpPage.Values[0]) then
     begin
-      MsgBox('Please enter a valid IPv4 address, for example 192.168.1.10.', mbError, MB_OK);
+      MsgBox('Please enter a valid IPv4 address, for example 172.16.0.200.', mbError, MB_OK);
       Result := False;
     end;
   end;
