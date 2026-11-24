@@ -480,6 +480,10 @@ def boot_destination(hostname: str, username: str, boot_stamp: str, offline: boo
     username = safe_identity_part(username, "username")
     if not re.fullmatch(BOOT_TIME_RE, boot_stamp):
         raise ValueError("invalid boot timestamp")
+    try:
+        datetime.strptime(boot_stamp, "%Y%m%d_%H%M%S")
+    except ValueError as exc:
+        raise ValueError("invalid boot timestamp") from exc
     day = boot_stamp[:8]
     suffix = "_offline" if offline else ""
     filename = f"boot_{boot_stamp}{suffix}.txt"

@@ -623,7 +623,9 @@ def maybe_send_boot_signal() -> None:
         return
     boot_signal_sent = True
     result = send_boot_signal()
-    if result != "ok":
+    if result == "ok":
+        upload_pending_boot_failures()
+    else:
         write_boot_failure("boot signal not delivered")
 
 
@@ -775,7 +777,6 @@ def run_forever() -> None:
         cli_overrides["quality"],
         client_state.capture_enabled,
     )
-    maybe_send_boot_signal()
     startup_started = datetime.now()
     startup_delay = startup_capture_delay_seconds()
     first_scheduled, _following = first_capture_times(
@@ -798,6 +799,7 @@ def run_forever() -> None:
         if not client_state.capture_enabled:
             client_state.wait_until_enabled()
             resumed = True
+        maybe_send_boot_signal()
         if startup_delay_pending and not resumed and client_state.capture_enabled:
             startup_delay_pending = False
             if not wait_startup_capture_delay(client_state, startup_delay):
@@ -940,7 +942,7 @@ def run_cache_self_test(cache_root: Path) -> None:
     from PIL import Image as PilImage
 
     configure_cache_root(cache_root)
-    configure_client_config_path(cache_root.parent / "client-config.json")
+    configure_runtime_state_path(cache_root.parent / "runtime_state.json")
     load_client_config("127.0.0.1")
     claimed_cache_files.clear()
     jpeg = process_screenshot(PilImage.new("RGB", (1920, 1080), (40, 80, 120)))
@@ -1220,7 +1222,8 @@ def run_session_self_test() -> None:
 
 
 def run_config_self_test(config_dir: Path) -> None:
-    configure_client_config_path(config_dir / "config.json")
+    configure_install_config_path(config_dir / "install_config.json")
+    configure_runtime_state_path(config_dir / "runtime_state.json")
     first = load_client_config("10.0.0.8")
     if first["screenshot_interval"] != 20 or first["jpeg_quality"] != 40 or first["client_cache_days"] != 7 or first["server_ip"] != "10.0.0.8":
         raise AssertionError(f"first startup config mismatch: {first}")
@@ -1245,7 +1248,7 @@ def run_config_self_test(config_dir: Path) -> None:
     upload_jpeg("127.0.0.1", "host", "user", "20261003_162000_37.jpg", b"jpeg", port=55551)
     if current_runtime()["screenshot_interval"] != 30 or current_runtime()["jpeg_quality"] != 50:
         raise AssertionError("server unavailable reset last known good")
-    if active_runtime_state_path.with_name("config.json.tmp").exists():
+    if active_runtime_state_path.with_name("runtime_state.json.tmp").exists():
         raise AssertionError("atomic config write left a temporary file")
     source = Image.new("RGB", (1920, 1080), (20, 140, 220))
     parsed = Image.open(io.BytesIO(process_screenshot(source)))
