@@ -349,7 +349,7 @@ def upload_jpeg(
     filename: str,
     jpeg: bytes,
     port: int = SERVER_PORT,
-) -> bool:
+) -> str:
     """Return "ok" for HTTP 200, "rejected" for HTTP 400, "retryable" otherwise. Timeout is fixed at 5 seconds."""
     url = f"http://{server_ip}:{port}/api/upload"
     try:
@@ -382,18 +382,18 @@ def upload_jpeg(
 
 def _mark_settings_locked() -> None:
     """Set locked=True after a successful server connection if not already locked."""
-    current = current_runtime()
-    if current.get("locked"):
-        return
-    current["locked"] = True
-    try:
-        save_client_config(current)
-    except OSError as exc:
-        logging.error("Could not persist settings lock: %s", exc)
     with config_lock:
+        current = dict(runtime_config)
+        if current.get("locked"):
+            return
+        current["locked"] = True
+        try:
+            save_client_config(current)
+        except OSError as exc:
+            logging.error("Could not persist settings lock: %s", exc)
         runtime_config.clear()
         runtime_config.update(current)
-    logging.info("Settings locked after successful server connection")
+        logging.info("Settings locked after successful server connection")
 
 
 def configure_cache_root(cache_root: Path) -> None:

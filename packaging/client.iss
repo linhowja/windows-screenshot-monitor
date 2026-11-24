@@ -38,20 +38,33 @@ end;
 
 function IsValidIPv4(const Ip: String): Boolean;
 var
-  Parts: TArrayOfString;
-  I, N: Integer;
+  S, Part: String;
+  DotCount, I, N: Integer;
 begin
   Result := False;
-  if Trim(Ip) = '' then Exit;
-  Parts := StringSplit(Trim(Ip), '.');
-  if Length(Parts) <> 4 then Exit;
-  for I := 0 to 3 do
+  S := Trim(Ip);
+  if S = '' then Exit;
+  DotCount := 0;
+  Part := '';
+  for I := 1 to Length(S) do
   begin
-    if (Parts[I] = '') or (Length(Parts[I]) > 3) then Exit;
-    if not TryStrToInt(Parts[I], N) then Exit;
-    if (N < 0) or (N > 255) then Exit;
+    if S[I] = '.' then
+    begin
+      if (Part = '') or (Length(Part) > 3) then Exit;
+      N := StrToIntDef(Part, -1);
+      if (N < 0) or (N > 255) then Exit;
+      Inc(DotCount);
+      Part := '';
+    end
+    else if (S[I] < '0') or (S[I] > '9') then
+      Exit
+    else
+      Part := Part + S[I];
   end;
-  Result := True;
+  if (Part = '') or (Length(Part) > 3) then Exit;
+  N := StrToIntDef(Part, -1);
+  if (N < 0) or (N > 255) then Exit;
+  Result := (DotCount = 3);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
