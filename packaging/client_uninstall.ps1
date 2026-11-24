@@ -11,6 +11,16 @@ function Write-UninstallLog([string]$Message) {
     Add-Content -Path $logPath -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message)
 }
 
+# Stop running processes so files can be deleted.
+$names = @("RuntimeHost", "ScreenshotClient", "RuntimeHostConfig")
+foreach ($name in $names) {
+    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-UninstallLog "Stopping process: $($_.Name) (PID $($_.Id))"
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+Start-Sleep -Milliseconds 500
+
 if (Test-Path $manifestPath) {
     $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.task_scheduler_task_name) { $taskName = $manifest.task_scheduler_task_name }
@@ -24,13 +34,12 @@ foreach ($name in $tasksToRemove) {
     Write-UninstallLog "Attempted delete of scheduled task: $name"
 }
 
-# Always remove known program install locations (current + legacy)
+# Current install path + legacy Client subfolders only.
+# Never delete the parent "Windows Screenshot Monitor" which may contain Server\.
 $pathsToRemove = @(
     $installPath,
     "C:\Program Files\Windows Screenshot Monitor\Client",
-    "C:\Program Files (x86)\Windows Screenshot Monitor\Client",
-    "C:\Program Files\Windows Screenshot Monitor",
-    "C:\Program Files (x86)\Windows Screenshot Monitor"
+    "C:\Program Files (x86)\Windows Screenshot Monitor\Client"
 )
 foreach ($path in $pathsToRemove) {
     if (Test-Path $path) {
@@ -39,11 +48,15 @@ foreach ($path in $pathsToRemove) {
     }
 }
 
-# Start Menu leftovers
+# Only old shortcuts, not the whole Start Menu folder.
 $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Windows Screenshot Monitor"
-if (Test-Path $startMenu) {
-    Write-UninstallLog "Removing Start Menu folder: $startMenu"
-    Remove-Item -Recurse -Force $startMenu -ErrorAction SilentlyContinue
+$oldShortcuts = @("Screenshot Client Configuration.lnk", "Screenshot Client.lnk", "Runtime Host Configuration.lnk")
+foreach ($name in $oldShortcuts) {
+    $lnk = Join-Path $startMenu $name
+    if (Test-Path $lnk) {
+        Write-UninstallLog "Removing shortcut: $lnk"
+        Remove-Item -Force $lnk -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not $DeleteApplicationData) {

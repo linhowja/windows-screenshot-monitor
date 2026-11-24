@@ -195,15 +195,15 @@ def client_config_path(hostname: str, username: str) -> Path:
 
 
 def load_or_create_client_config(hostname: str, username: str) -> dict:
-    """Load this client's config, creating it from global defaults on first use."""
+    """Load this client's config, creating it from global defaults only when missing."""
     path = client_config_path(hostname, username)
     defaults = client_config_payload()
     if path.exists():
         try:
             raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
-            logging.error("Per-client config unreadable, using defaults: %s", exc)
-            raw = None
+            logging.error("Per-client config unreadable, using defaults in memory (not overwriting): %s", exc)
+            return defaults
         if isinstance(raw, dict):
             return {
                 "screenshot_interval": _positive_int(
@@ -220,7 +220,9 @@ def load_or_create_client_config(hostname: str, username: str) -> dict:
                     raw.get("client_cache_days"), defaults["client_cache_days"]
                 ),
             }
-    # First time this client connects: create from current global defaults
+        logging.error("Per-client config is not an object; using defaults in memory")
+        return defaults
+    # Only create when the file does not exist
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         save_server_config(path, defaults)

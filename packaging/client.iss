@@ -33,7 +33,38 @@ end;
 
 function ServerIp(Param: String): String;
 begin
-  Result := ServerIpPage.Values[0];
+  Result := Trim(ServerIpPage.Values[0]);
+end;
+
+function IsValidIPv4(const Ip: String): Boolean;
+var
+  Parts: TArrayOfString;
+  I, N: Integer;
+begin
+  Result := False;
+  if Trim(Ip) = '' then Exit;
+  Parts := StringSplit(Trim(Ip), '.');
+  if Length(Parts) <> 4 then Exit;
+  for I := 0 to 3 do
+  begin
+    if (Parts[I] = '') or (Length(Parts[I]) > 3) then Exit;
+    if not TryStrToInt(Parts[I], N) then Exit;
+    if (N < 0) or (N > 255) then Exit;
+  end;
+  Result := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID = ServerIpPage.ID then
+  begin
+    if not IsValidIPv4(ServerIpPage.Values[0]) then
+    begin
+      MsgBox('Please enter a valid IPv4 address, for example 192.168.1.10.', mbError, MB_OK);
+      Result := False;
+    end;
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

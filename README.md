@@ -1,5 +1,8 @@
 # Windows Screenshot Monitor
 
+> **最新規格以 `docs/FULL_SPECIFICATION.md` 為準。** 若與舊文件（如 `docs/01_MVP_SPEC.md`）衝突，以 `docs/FULL_SPECIFICATION.md` 與目前程式為準。
+
+
 家庭內由管理者授權的 Windows 10/11 64-bit 電腦，定時截主螢幕，壓成灰階 JPEG，經區域網路送到同一台 Windows Server，再用檔案總管依時間查看。
 
 這不是企業監控平台。舊首頁介紹的 Tor、`.onion` 與 Web 相簿來自上游 [TorCap](https://github.com/ciscoAnass/torcap)，不再是這個專案的功能。

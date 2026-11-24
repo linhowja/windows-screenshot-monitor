@@ -22,13 +22,28 @@ function Fail-Install([string]$Message) {
 }
 
 # ---------------------------------------------------------------------------
-# Remove previous versions of this software before installing the new one.
-# Covers Program Files, Program Files (x86), old task names, and Start Menu.
+# Stop running processes so files are not locked during cleanup / reinstall.
+# ---------------------------------------------------------------------------
+function Stop-ClientProcesses {
+    $names = @("RuntimeHost", "ScreenshotClient", "RuntimeHostConfig")
+    foreach ($name in $names) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-InstallLog "Stopping process: $($_.Name) (PID $($_.Id))"
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Start-Sleep -Milliseconds 500
+}
+
+# ---------------------------------------------------------------------------
+# Remove previous versions. Do NOT delete the shared parent folder that
+# may contain a co-installed Server. Do NOT delete the whole Start Menu
+# folder (Inno Setup creates the new shortcut before this script runs).
 # ---------------------------------------------------------------------------
 function Remove-PreviousVersions {
     Write-InstallLog "Starting cleanup of previous client versions"
+    Stop-ClientProcesses
 
-    # Old scheduled task names
     $oldTasks = @("Screenshot Client", "Runtime Host")
     foreach ($name in $oldTasks) {
         $query = schtasks.exe /Query /TN $name 2>$null
@@ -38,12 +53,11 @@ function Remove-PreviousVersions {
         }
     }
 
-    # Old install directories
+    # Only legacy Client subfolders. Never the parent "Windows Screenshot Monitor"
+    # which may contain Server\.
     $oldPaths = @(
         "C:\Program Files\Windows Screenshot Monitor\Client",
-        "C:\Program Files (x86)\Windows Screenshot Monitor\Client",
-        "C:\Program Files\Windows Screenshot Monitor",
-        "C:\Program Files (x86)\Windows Screenshot Monitor"
+        "C:\Program Files (x86)\Windows Screenshot Monitor\Client"
     )
     foreach ($path in $oldPaths) {
         if (Test-Path $path) {
@@ -52,11 +66,18 @@ function Remove-PreviousVersions {
         }
     }
 
-    # Start Menu shortcuts from previous installers
+    # Only delete known old shortcut files, not the folder itself.
     $startMenu = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Windows Screenshot Monitor"
-    if (Test-Path $startMenu) {
-        Write-InstallLog "Removing old Start Menu folder: $startMenu"
-        Remove-Item -Recurse -Force $startMenu -ErrorAction SilentlyContinue
+    $oldShortcuts = @(
+        "Screenshot Client Configuration.lnk",
+        "Screenshot Client.lnk"
+    )
+    foreach ($name in $oldShortcuts) {
+        $lnk = Join-Path $startMenu $name
+        if (Test-Path $lnk) {
+            Write-InstallLog "Removing old shortcut: $lnk"
+            Remove-Item -Force $lnk -ErrorAction SilentlyContinue
+        }
     }
 
     # Remove old ProgramData so a clean config is written.
@@ -71,25 +92,22 @@ function Remove-PreviousVersions {
 Remove-PreviousVersions
 
 # ---------------------------------------------------------------------------
-# Fresh install
+# Fresh install — always write config with the new ServerIp and locked=false.
 # ---------------------------------------------------------------------------
 $programDataExisted = Test-Path $programData
-$configExisted = Test-Path $configPath
-$cacheExisted = Test-Path $cachePath
-
 New-Item -ItemType Directory -Force -Path $programData, $cachePath, $InstallPath | Out-Null
 
-if (-not $configExisted) {
-    $config = @{
-        server_ip = $ServerIp
-        server_port = 55550
-        screenshot_interval = 20
-        jpeg_quality = 40
-        client_cache_days = 7
-    }
-    $utf8 = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
+$config = @{
+    server_ip = $ServerIp
+    server_port = 55550
+    screenshot_interval = 20
+    jpeg_quality = 40
+    client_cache_days = 7
+    locked = $false
 }
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
+Write-InstallLog "Wrote fresh config: $configPath (server_ip=$ServerIp, locked=false)"
 
 # Hide the install folder
 attrib +h +s $InstallPath
@@ -128,11 +146,8 @@ $manifest = @{
     programdata_path = $programData
     task_scheduler_task_name = $taskName
     programdata_existed_before_install = $programDataExisted
-    config_existed_before_install = $configExisted
-    cache_existed_before_install = $cacheExisted
     path_created_by_installer = @($programData, $cachePath, $InstallPath)
 }
-$utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json), $utf8)
 Write-Output "Client install manifest written: $manifestPath"
 Write-InstallLog "Install completed"

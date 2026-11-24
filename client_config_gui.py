@@ -324,6 +324,15 @@ def run_self_test() -> int:
     if not ok or leftover.exists():
         raise AssertionError("leftover tmp blocked the client GUI save")
 
+    # Locked config must be detected and must not be saved
+    locked_path = root / "locked.json"
+    locked_path.write_text(json.dumps({**original, "locked": True}), encoding="utf-8")
+    if not is_settings_locked(locked_path):
+        raise AssertionError("locked config was not detected")
+    ok, message = save_settings(locked_path, changed)
+    if ok or "已鎖定" not in message:
+        raise AssertionError("locked config was saved")
+
     packaging = Path(__file__).resolve().parent / "packaging"
     iss = (packaging / "client.iss").read_text(encoding="utf-8")
     spec = (packaging / "client_config.spec").read_text(encoding="utf-8")

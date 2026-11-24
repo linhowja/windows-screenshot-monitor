@@ -134,57 +134,74 @@ def save_client_config(payload: dict) -> None:
 def load_client_config(server_ip: str | None = None) -> dict:
     global runtime_config
     raw: object = None
+    read_failed = False
     if active_client_config_path.exists():
-        try:
-            raw = json.loads(active_client_config_path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logging.error("Client config is unreadable; using defaults: %s", exc)
+        for attempt in range(3):
+            try:
+                raw = json.loads(active_client_config_path.read_text(encoding="utf-8-sig"))
+                read_failed = False
+                break
+            except OSError as exc:
+                read_failed = True
+                logging.error("Client config read attempt %d failed: %s", attempt + 1, exc)
+                if attempt < 2:
+                    time.sleep(0.5)
+            except json.JSONDecodeError as exc:
+                logging.error("Client config is invalid JSON: %s", exc)
+                read_failed = True
+                break
     validated = _valid_client_fields(raw)
     if validated is None:
         validated = dict(DEFAULT_CLIENT_CONFIG)
         if server_ip:
             validated["server_ip"] = server_ip
-        logging.error("Client config missing or invalid; wrote defaults")
+        if read_failed:
+            logging.error("Client config unreadable; using in-memory defaults without overwriting disk")
+        else:
+            logging.error("Client config missing or invalid; wrote defaults")
+            try:
+                save_client_config(validated)
+            except OSError as exc:
+                logging.error("Could not persist client config: %s", exc)
     elif server_ip:
         validated["server_ip"] = server_ip
+        try:
+            save_client_config(validated)
+        except OSError as exc:
+            logging.error("Could not persist client config: %s", exc)
     # Preserve lock flag from the file (default False for new installs)
     if isinstance(raw, dict) and "locked" in raw:
         validated["locked"] = bool(raw.get("locked"))
     else:
         validated.setdefault("locked", False)
-    try:
-        save_client_config(validated)
-    except OSError as exc:
-        # Non-admin or locked ProgramData should not prevent the client from starting.
-        logging.error("Could not persist client config (continuing with in-memory values): %s", exc)
     with config_lock:
         runtime_config = validated
     return dict(validated)
 
 
 def apply_server_config(raw: object) -> bool:
-    current = current_runtime()
-    candidate = dict(current)
-    if isinstance(raw, dict):
-        candidate.update(raw)
-    candidate["server_ip"] = current["server_ip"]
-    candidate["server_port"] = SERVER_PORT
-    validated = _valid_client_fields(candidate)
-    if validated is None:
-        logging.error("Server config rejected; keeping last known good")
-        return False
-    # Successful connection: lock settings so only the program (server push) can change them.
-    validated["locked"] = True
-    try:
-        save_client_config(validated)
-    except OSError as exc:
-        logging.error("Could not save last known good config: %s", exc)
-        # Still update runtime so the current process uses the new values
     with config_lock:
+        current = dict(runtime_config)
+        candidate = dict(current)
+        if isinstance(raw, dict):
+            candidate.update(raw)
+        candidate["server_ip"] = current["server_ip"]
+        candidate["server_port"] = SERVER_PORT
+        validated = _valid_client_fields(candidate)
+        if validated is None:
+            logging.error("Server config rejected; keeping last known good")
+            return False
+        validated["locked"] = True
+        if validated == current:
+            return True
+        try:
+            save_client_config(validated)
+        except OSError as exc:
+            logging.error("Could not save last known good config: %s", exc)
         runtime_config.clear()
         runtime_config.update(validated)
-    logging.info("Updated last known good config (locked): %s", validated)
-    return True
+        logging.info("Updated last known good config (locked): %s", validated)
+        return True
 
 
 def documents_dir() -> Path:
@@ -333,7 +350,7 @@ def upload_jpeg(
     jpeg: bytes,
     port: int = SERVER_PORT,
 ) -> bool:
-    """Return True only for HTTP 200. Timeout is fixed at 5 seconds."""
+    """Return "ok" for HTTP 200, "rejected" for HTTP 400, "retryable" otherwise. Timeout is fixed at 5 seconds."""
     url = f"http://{server_ip}:{port}/api/upload"
     try:
         response = requests.post(
@@ -344,21 +361,23 @@ def upload_jpeg(
         )
     except requests.RequestException as exc:
         logging.error("Upload failed for %s: %s", filename, exc)
-        return False
+        return "retryable"
+    if response.status_code == 400:
+        logging.error("Upload rejected for %s: HTTP 400", filename)
+        return "rejected"
     if response.status_code != 200:
         logging.error("Upload failed for %s: HTTP %s", filename, response.status_code)
-        return False
+        return "retryable"
     try:
         body = response.json()
     except ValueError:
         logging.error("Upload succeeded but config response was not JSON")
-        # Still mark as locked after successful connection
         _mark_settings_locked()
-        return True
+        return "ok"
     if not apply_server_config(body.get("config")):
         logging.error("Upload succeeded but config was not applied")
         _mark_settings_locked()
-    return True
+    return "ok"
 
 
 def _mark_settings_locked() -> None:
@@ -453,14 +472,15 @@ def purge_expired_cache(now: datetime | None = None) -> int:
     return removed
 
 
-def recover_cache(server_ip: str = "127.0.0.1") -> int:
-    """Upload every pending cache JPEG, oldest first. Phase 4 may call this."""
+def recover_cache() -> int:
+    """Upload pending cache JPEGs, oldest first. Stop after 3 consecutive retryable failures."""
     logging.info("Recovery started")
     purge_expired_cache()
     pending = pending_cache_files()
     logging.info("Recovery found %d files", len(pending))
     hostname, username = client_identity()
     uploaded = 0
+    consecutive_retryable = 0
     for path in pending:
         with cache_lock:
             if path in claimed_cache_files or not path.is_file():
@@ -468,21 +488,36 @@ def recover_cache(server_ip: str = "127.0.0.1") -> int:
             claimed_cache_files.add(path)
         try:
             jpeg = path.read_bytes()
-            if upload_jpeg(effective_runtime()["server_ip"], hostname, username, path.name, jpeg):
+            result = upload_jpeg(effective_runtime()["server_ip"], hostname, username, path.name, jpeg)
+            if result == "ok":
                 with cache_lock:
                     path.unlink(missing_ok=True)
                     claimed_cache_files.discard(path)
                 logging.info("Recovery upload success: %s", path.name)
                 logging.info("Cache file deleted: %s", path)
                 uploaded += 1
+                consecutive_retryable = 0
+            elif result == "rejected":
+                logging.error("Recovery upload rejected (skipped): %s", path.name)
+                with cache_lock:
+                    claimed_cache_files.discard(path)
+                # Do not count toward consecutive failures
             else:
+                consecutive_retryable += 1
                 logging.error("Recovery upload failed: %s", path.name)
                 with cache_lock:
                     claimed_cache_files.discard(path)
+                if consecutive_retryable >= 3:
+                    logging.info("Recovery stopped after 3 consecutive retryable failures")
+                    break
         except Exception as exc:
+            consecutive_retryable += 1
             logging.error("Recovery upload failed: %s (%s)", path.name, exc)
             with cache_lock:
                 claimed_cache_files.discard(path)
+            if consecutive_retryable >= 3:
+                logging.info("Recovery stopped after 3 consecutive failures")
+                break
     return uploaded
 
 
@@ -493,7 +528,7 @@ def recovery_worker(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             logging.info("Recovery worker awakened")
-            recover_cache(effective_runtime()["server_ip"])
+            recover_cache()
         except Exception as exc:
             logging.exception("Recovery worker failed and will retry: %s", exc)
         if stop.is_set():
@@ -553,7 +588,8 @@ def handle_capture(server_ip: str, quality: int) -> None:
     hostname, username = client_identity()
     filename, jpeg, _captured_at = capture_jpeg(quality)
     try:
-        if upload_jpeg(server_ip, hostname, username, filename, jpeg):
+        result = upload_jpeg(server_ip, hostname, username, filename, jpeg)
+        if result == "ok":
             logging.info("Uploaded %s (%d bytes) HTTP 200; discarded", filename, len(jpeg))
         else:
             logging.error("Upload failed for %s", filename)
@@ -767,12 +803,12 @@ def run_cache_self_test(cache_root: Path) -> None:
     time.sleep(0.4)
     hostname, username = client_identity()
     try:
-        if not upload_jpeg("127.0.0.1", hostname, username, names[0], jpeg):
+        if upload_jpeg("127.0.0.1", hostname, username, names[0], jpeg) != "ok":
             raise AssertionError("Test A upload did not succeed")
         if pending_cache_files():
             raise AssertionError("Test A left a cache file")
 
-        if upload_jpeg("127.0.0.1", hostname, username, names[1], jpeg, port=55551):
+        if upload_jpeg("127.0.0.1", hostname, username, names[1], jpeg, port=55551) == "ok":
             raise AssertionError("Test B expected upload failure")
         if not cache_jpeg(names[1], jpeg) or len(pending_cache_files()) != 1:
             raise AssertionError("Test B did not cache the failed upload")
@@ -792,7 +828,7 @@ def run_cache_self_test(cache_root: Path) -> None:
 
         globals()["upload_jpeg"] = recording_upload
         try:
-            recover_cache("127.0.0.1")
+            recover_cache()
         finally:
             globals()["upload_jpeg"] = original_upload
         if uploaded_order != names:
@@ -804,9 +840,9 @@ def run_cache_self_test(cache_root: Path) -> None:
             cache_jpeg(name, jpeg)
         before = [path.name for path in pending_cache_files()]
         failed_upload = upload_jpeg
-        globals()["upload_jpeg"] = lambda *args, **kwargs: False
+        globals()["upload_jpeg"] = lambda *args, **kwargs: "retryable"
         try:
-            recover_cache("127.0.0.1")
+            recover_cache()
         finally:
             globals()["upload_jpeg"] = failed_upload
         if [path.name for path in pending_cache_files()] != before:
@@ -817,11 +853,11 @@ def run_cache_self_test(cache_root: Path) -> None:
         def partial_upload(*args, **kwargs):
             filename = args[3]
             attempted.append(filename)
-            return filename != names[1]
+            return "ok" if filename != names[1] else "retryable"
 
         globals()["upload_jpeg"] = partial_upload
         try:
-            recover_cache("127.0.0.1")
+            recover_cache()
         finally:
             globals()["upload_jpeg"] = original_upload
         if attempted != names:
@@ -836,7 +872,7 @@ def run_cache_self_test(cache_root: Path) -> None:
         server_copy = storage / f"{hostname}_{username}" / day / names[0]
         if not server_copy.is_file():
             raise AssertionError("Test G server file missing")
-        recover_cache("127.0.0.1")
+        recover_cache()
         matches = list(server_copy.parent.glob(names[0]))
         if matches != [server_copy] or pending_cache_files():
             raise AssertionError("Test G duplicate recovery failed")
@@ -852,7 +888,7 @@ def run_cache_self_test(cache_root: Path) -> None:
             return original_upload(*args, **kwargs)
 
         globals()["upload_jpeg"] = slow_upload
-        worker = threading.Thread(target=recover_cache, args=("127.0.0.1",))
+        worker = threading.Thread(target=recover_cache)
         worker.start()
         if not release.wait(2):
             raise AssertionError("Test H recovery did not start")
@@ -885,7 +921,7 @@ def run_cache_self_test(cache_root: Path) -> None:
 
         globals()["capture_jpeg"] = fast_capture
         globals()["upload_jpeg"] = mixed_upload
-        recovery = threading.Thread(target=recover_cache, args=("127.0.0.1",))
+        recovery = threading.Thread(target=recover_cache)
         recovery.start()
         if not release_capture.wait(2):
             raise AssertionError("concurrency recovery did not start")
@@ -912,7 +948,7 @@ def run_cache_self_test(cache_root: Path) -> None:
         recent_name = DateTime.now().strftime("%Y%m%d_020000_00.jpg")
         cache_jpeg(old_name, jpeg)
         cache_jpeg(recent_name, jpeg)
-        globals()["upload_jpeg"] = lambda *args, **kwargs: False
+        globals()["upload_jpeg"] = lambda *args, **kwargs: "retryable"
         try:
             purge_expired_cache()
         finally:
