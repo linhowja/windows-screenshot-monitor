@@ -5,8 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $programData = "C:\ProgramData\ScreenshotClient"
-$configPath = Join-Path $programData "config.json"
+$runtimeStatePath = Join-Path $programData "runtime_state.json"
 $cachePath = Join-Path $programData "Cache"
+$installConfigPath = Join-Path $InstallPath "install_config.json"
 $manifestPath = Join-Path $programData "install_manifest.json"
 $taskName = "Runtime Host"
 $exe = Join-Path $InstallPath "RuntimeHost.exe"
@@ -92,31 +93,37 @@ function Remove-PreviousVersions {
 Remove-PreviousVersions
 
 # ---------------------------------------------------------------------------
-# Fresh install — always write config with the new ServerIp and locked=false.
+# Fresh install — write install_config.json (Users:RX) and runtime_state.json (Users:M).
 # ---------------------------------------------------------------------------
 $programDataExisted = Test-Path $programData
 New-Item -ItemType Directory -Force -Path $programData, $cachePath, $InstallPath | Out-Null
 
-$config = @{
+$utf8 = New-Object System.Text.UTF8Encoding $false
+
+# Write install_config first, then lock the folder so the file inherits Users:RX.
+$installConfig = @{
     server_ip = $ServerIp
     server_port = 55550
-    screenshot_interval = 20
-    jpeg_quality = 40
-    client_cache_days = 7
-    locked = $false
 }
-$utf8 = New-Object System.Text.UTF8Encoding $false
-[System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), $utf8)
-Write-InstallLog "Wrote fresh config: $configPath (server_ip=$ServerIp, locked=false)"
+[System.IO.File]::WriteAllText($installConfigPath, ($installConfig | ConvertTo-Json), $utf8)
+Write-InstallLog "Wrote install_config: $installConfigPath (server_ip=$ServerIp)"
 
 # Hide the install folder
 attrib +h +s $InstallPath
 
-# Lock permissions
-# Install folder stays read/execute for users. Config folder needs write so the client process can update LKG and set the lock flag.
+# Lock permissions. install_config.json inherits Users:RX from the folder.
+# No separate icacls on a config.json (that file no longer exists).
 icacls $InstallPath /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)RX" | Out-Null
 icacls $programData /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "Users:(OI)(CI)M" | Out-Null
-icacls $configPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" "Users:M" | Out-Null
+
+# Write runtime_state after programData ACL so it inherits Users:M.
+$runtimeState = @{
+    screenshot_interval = 20
+    jpeg_quality = 40
+    client_cache_days = 7
+}
+[System.IO.File]::WriteAllText($runtimeStatePath, ($runtimeState | ConvertTo-Json), $utf8)
+Write-InstallLog "Wrote runtime_state: $runtimeStatePath"
 
 try {
     $action = New-ScheduledTaskAction -Execute $exe

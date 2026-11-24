@@ -34,22 +34,27 @@ STARTUP_CAPTURE_DELAY_MIN_SECONDS = 7
 STARTUP_CAPTURE_DELAY_MAX_SECONDS = 30
 CACHE_ROOT = Path(r"C:\ProgramData\ScreenshotClient\Cache")
 CLIENT_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotClient")
-CLIENT_CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotClient\config.json")
+INSTALL_CONFIG_PATH = Path(r"C:\ProgramData\Microsoft\Windows\RuntimeHost\install_config.json")
+RUNTIME_STATE_PATH = Path(r"C:\ProgramData\ScreenshotClient\runtime_state.json")
+BOOT_FAILED_DIR = Path(r"C:\ProgramData\ScreenshotClient\boot_failed")
 session_log_handler: logging.Handler | None = None
-DEFAULT_CLIENT_CONFIG = {
+DEFAULT_INSTALL_CONFIG = {
     "server_ip": "127.0.0.1",
     "server_port": SERVER_PORT,
+}
+DEFAULT_RUNTIME_STATE = {
     "screenshot_interval": DEFAULT_INTERVAL_SECONDS,
     "jpeg_quality": DEFAULT_JPEG_QUALITY,
     "client_cache_days": CACHE_RETENTION_DAYS,
-    "locked": False,
 }
+DEFAULT_CLIENT_CONFIG = {**DEFAULT_INSTALL_CONFIG, **DEFAULT_RUNTIME_STATE}
 FILENAME_RE = r"^\d{8}_\d{6}_\d{2}\.jpg$"
 
 cache_lock = threading.Lock()
 claimed_cache_files: set[Path] = set()
 active_cache_root = CACHE_ROOT
-active_client_config_path = CLIENT_CONFIG_PATH
+active_install_config_path = INSTALL_CONFIG_PATH
+active_runtime_state_path = RUNTIME_STATE_PATH
 runtime_config = dict(DEFAULT_CLIENT_CONFIG)
 config_lock = threading.Lock()
 cli_overrides = {"server_ip": None, "interval": None, "quality": None}
@@ -72,41 +77,57 @@ def effective_runtime() -> dict:
     return runtime
 
 
-def configure_client_config_path(path: Path) -> None:
-    global active_client_config_path
-    active_client_config_path = path
+def configure_install_config_path(path: Path) -> None:
+    global active_install_config_path
+    active_install_config_path = path
 
 
-def _valid_client_fields(raw: object) -> dict | None:
+def configure_runtime_state_path(path: Path) -> None:
+    global active_runtime_state_path
+    active_runtime_state_path = path
+
+
+def _valid_install_fields(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    server_ip = raw.get("server_ip")
+    server_port = raw.get("server_port")
+    if not isinstance(server_ip, str) or not server_ip.strip() or server_port != SERVER_PORT:
+        return None
+    return {"server_ip": server_ip.strip(), "server_port": SERVER_PORT}
+
+
+def _valid_runtime_fields(raw: object) -> dict | None:
     if not isinstance(raw, dict):
         return None
     interval = raw.get("screenshot_interval")
     quality = raw.get("jpeg_quality")
     days = raw.get("client_cache_days")
-    server_ip = raw.get("server_ip")
-    server_port = raw.get("server_port")
     if (
         isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
         or isinstance(quality, bool) or not isinstance(quality, int) or not 20 <= quality <= 100
         or isinstance(days, bool) or not isinstance(days, int) or days <= 0
-        or not isinstance(server_ip, str) or not server_ip.strip()
-        or server_port != SERVER_PORT
     ):
         return None
-    locked = bool(raw.get("locked", False))
     return {
-        "server_ip": server_ip,
-        "server_port": SERVER_PORT,
         "screenshot_interval": interval,
         "jpeg_quality": quality,
         "client_cache_days": days,
-        "locked": locked,
     }
 
 
-def save_client_config(payload: dict) -> None:
-    """Atomically write client config. Overwrites residual .tmp to avoid FileExistsError from exclusive create."""
-    path = active_client_config_path
+def _valid_client_fields(raw: object) -> dict | None:
+    """Legacy helper used by tests; validates a combined dict."""
+    install = _valid_install_fields(raw)
+    runtime = _valid_runtime_fields(raw)
+    if install is None or runtime is None:
+        return None
+    return {**install, **runtime}
+
+
+def save_runtime_state(payload: dict) -> None:
+    """Atomically write runtime state. Overwrites residual .tmp to avoid FileExistsError from exclusive create."""
+    path = active_runtime_state_path
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     data = json.dumps(payload, indent=2).encode("utf-8")
@@ -131,76 +152,98 @@ def save_client_config(payload: dict) -> None:
     os.replace(temporary, path)
 
 
-def load_client_config(server_ip: str | None = None) -> dict:
-    global runtime_config
+def _read_json_with_retry(path: Path) -> tuple[object, bool]:
+    """Return (raw, read_failed). Retries OSError up to 3 times."""
     raw: object = None
     read_failed = False
-    if active_client_config_path.exists():
-        for attempt in range(3):
-            try:
-                raw = json.loads(active_client_config_path.read_text(encoding="utf-8-sig"))
-                read_failed = False
-                break
-            except OSError as exc:
-                read_failed = True
-                logging.error("Client config read attempt %d failed: %s", attempt + 1, exc)
-                if attempt < 2:
-                    time.sleep(0.5)
-            except json.JSONDecodeError as exc:
-                logging.error("Client config is invalid JSON: %s", exc)
-                read_failed = True
-                break
-    validated = _valid_client_fields(raw)
+    if not path.exists():
+        return None, False
+    for attempt in range(3):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            return raw, False
+        except OSError as exc:
+            read_failed = True
+            logging.error("Config read attempt %d failed for %s: %s", attempt + 1, path, exc)
+            if attempt < 2:
+                time.sleep(0.5)
+        except json.JSONDecodeError as exc:
+            logging.error("Config is invalid JSON (%s): %s", path, exc)
+            return None, True
+    return raw, read_failed
+
+
+def load_install_config(server_ip: str | None = None) -> dict:
+    raw, read_failed = _read_json_with_retry(active_install_config_path)
+    validated = _valid_install_fields(raw)
     if validated is None:
-        validated = dict(DEFAULT_CLIENT_CONFIG)
+        validated = dict(DEFAULT_INSTALL_CONFIG)
         if server_ip:
             validated["server_ip"] = server_ip
         if read_failed:
-            logging.error("Client config unreadable; using in-memory defaults without overwriting disk")
+            logging.error("install_config unreadable; using in-memory defaults without writing")
         else:
-            logging.error("Client config missing or invalid; wrote defaults")
-            try:
-                save_client_config(validated)
-            except OSError as exc:
-                logging.error("Could not persist client config: %s", exc)
+            logging.error("install_config missing or invalid; using defaults (not writing)")
     elif server_ip:
         validated["server_ip"] = server_ip
-        try:
-            save_client_config(validated)
-        except OSError as exc:
-            logging.error("Could not persist client config: %s", exc)
-    # Preserve lock flag from the file (default False for new installs)
-    if isinstance(raw, dict) and "locked" in raw:
-        validated["locked"] = bool(raw.get("locked"))
-    else:
-        validated.setdefault("locked", False)
+    return validated
+
+
+def load_runtime_state() -> dict:
+    raw, read_failed = _read_json_with_retry(active_runtime_state_path)
+    validated = _valid_runtime_fields(raw)
+    if validated is None:
+        validated = dict(DEFAULT_RUNTIME_STATE)
+        if read_failed:
+            logging.error("runtime_state unreadable; using in-memory defaults without overwriting")
+        else:
+            logging.error("runtime_state missing or invalid; wrote defaults")
+            try:
+                save_runtime_state(validated)
+            except OSError as exc:
+                logging.error("Could not persist runtime state: %s", exc)
+    return validated
+
+
+def load_client_config(server_ip: str | None = None) -> dict:
+    global runtime_config
+    install = load_install_config(server_ip)
+    state = load_runtime_state()
+    combined = {**install, **state}
     with config_lock:
-        runtime_config = validated
-    return dict(validated)
+        runtime_config = combined
+    return dict(combined)
 
 
 def apply_server_config(raw: object) -> bool:
+    """Update dynamic runtime state from server push. Never touches server_ip."""
     with config_lock:
         current = dict(runtime_config)
-        candidate = dict(current)
-        if isinstance(raw, dict):
-            candidate.update(raw)
-        candidate["server_ip"] = current["server_ip"]
-        candidate["server_port"] = SERVER_PORT
-        validated = _valid_client_fields(candidate)
+        candidate = {
+            "screenshot_interval": raw.get("screenshot_interval") if isinstance(raw, dict) else None,
+            "jpeg_quality": raw.get("jpeg_quality") if isinstance(raw, dict) else None,
+            "client_cache_days": raw.get("client_cache_days") if isinstance(raw, dict) else None,
+        }
+        # Fall back to current values for missing keys
+        for key in ("screenshot_interval", "jpeg_quality", "client_cache_days"):
+            if candidate[key] is None:
+                candidate[key] = current.get(key)
+        validated = _valid_runtime_fields(candidate)
         if validated is None:
             logging.error("Server config rejected; keeping last known good")
             return False
-        validated["locked"] = True
-        if validated == current:
+        if (
+            current.get("screenshot_interval") == validated["screenshot_interval"]
+            and current.get("jpeg_quality") == validated["jpeg_quality"]
+            and current.get("client_cache_days") == validated["client_cache_days"]
+        ):
             return True
         try:
-            save_client_config(validated)
+            save_runtime_state(validated)
         except OSError as exc:
-            logging.error("Could not save last known good config: %s", exc)
-        runtime_config.clear()
+            logging.error("Could not save runtime state: %s", exc)
         runtime_config.update(validated)
-        logging.info("Updated last known good config (locked): %s", validated)
+        logging.info("Updated runtime state: %s", validated)
         return True
 
 
@@ -372,28 +415,10 @@ def upload_jpeg(
         body = response.json()
     except ValueError:
         logging.error("Upload succeeded but config response was not JSON")
-        _mark_settings_locked()
         return "ok"
     if not apply_server_config(body.get("config")):
         logging.error("Upload succeeded but config was not applied")
-        _mark_settings_locked()
     return "ok"
-
-
-def _mark_settings_locked() -> None:
-    """Set locked=True after a successful server connection if not already locked."""
-    with config_lock:
-        current = dict(runtime_config)
-        if current.get("locked"):
-            return
-        current["locked"] = True
-        try:
-            save_client_config(current)
-        except OSError as exc:
-            logging.error("Could not persist settings lock: %s", exc)
-        runtime_config.clear()
-        runtime_config.update(current)
-        logging.info("Settings locked after successful server connection")
 
 
 def configure_cache_root(cache_root: Path) -> None:
@@ -609,7 +634,7 @@ def run_forever() -> None:
         "Client startup hostname=%s username=%s config=%s cache=%s server=%s:%s interval=%s quality=%s cli_interval=%s cli_quality=%s capture=%s",
         hostname,
         username,
-        active_client_config_path,
+        active_runtime_state_path,
         active_cache_root,
         initial["server_ip"],
         SERVER_PORT,
@@ -693,8 +718,8 @@ def run_self_test() -> None:
     if reopened.format != "JPEG" or reopened.mode != "L" or reopened.size != (1920, 1080):
         raise AssertionError("cached JPEG could not be reopened at original size")
     logging.info("client self-test passed: %s 1920x1080 mode=L cache-bytes-match", filename)
-    if CLIENT_CONFIG_PATH != Path(r"C:\ProgramData\ScreenshotClient\config.json"):
-        raise AssertionError("client config path is not fixed")
+    if RUNTIME_STATE_PATH != Path(r"C:\ProgramData\ScreenshotClient\runtime_state.json"):
+        raise AssertionError("runtime state path is not fixed")
     if CACHE_ROOT != Path(r"C:\ProgramData\ScreenshotClient\Cache"):
         raise AssertionError("client cache path is not fixed")
     import tempfile
@@ -1070,7 +1095,7 @@ def run_config_self_test(config_dir: Path) -> None:
     reloaded = load_client_config()
     if reloaded != first:
         raise AssertionError("saved config did not reload")
-    active_client_config_path.write_text("{bad", encoding="utf-8")
+    active_runtime_state_path.write_text("{bad", encoding="utf-8")
     recovered = load_client_config("10.0.0.8")
     if recovered["jpeg_quality"] != 40:
         raise AssertionError("corrupt client config did not fall back")
@@ -1088,21 +1113,20 @@ def run_config_self_test(config_dir: Path) -> None:
     upload_jpeg("127.0.0.1", "host", "user", "20261003_162000_37.jpg", b"jpeg", port=55551)
     if current_runtime()["screenshot_interval"] != 30 or current_runtime()["jpeg_quality"] != 50:
         raise AssertionError("server unavailable reset last known good")
-    if active_client_config_path.with_name("config.json.tmp").exists():
+    if active_runtime_state_path.with_name("config.json.tmp").exists():
         raise AssertionError("atomic config write left a temporary file")
     source = Image.new("RGB", (1920, 1080), (20, 140, 220))
     parsed = Image.open(io.BytesIO(process_screenshot(source)))
     parsed.load()
     if parsed.size != (1920, 1080) or parsed.mode != "L":
         raise AssertionError("resolution regression")
-    active_client_config_path.write_text(
-        json.dumps({
-            "server_ip": "192.168.2.100",
-            "server_port": 55550,
-            "screenshot_interval": 30,
-            "jpeg_quality": 50,
-            "client_cache_days": 5,
-        }),
+    active_install_config_path.parent.mkdir(parents=True, exist_ok=True)
+    active_install_config_path.write_text(
+        json.dumps({"server_ip": "192.168.2.100", "server_port": 55550}),
+        encoding="utf-8",
+    )
+    active_runtime_state_path.write_text(
+        json.dumps({"screenshot_interval": 30, "jpeg_quality": 50, "client_cache_days": 5}),
         encoding="utf-8",
     )
     cli_overrides["server_ip"] = None
@@ -1128,7 +1152,7 @@ def run_config_self_test(config_dir: Path) -> None:
         current = current_runtime()
         current["screenshot_interval"] = 20
         current["jpeg_quality"] = 40
-        save_client_config(current)
+        save_runtime_state(current)
         with config_lock:
             runtime_config.clear()
             runtime_config.update(current)

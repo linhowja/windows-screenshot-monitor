@@ -370,3 +370,35 @@ py -3 -m PyInstaller packaging/server_config.spec
 - `docs/05_PHASE_HISTORY.md`：各階段實作與除錯紀錄
 - `packaging/BUILD.txt`：建置與安裝路徑說明
 - 本文件：目前完整現況
+
+
+## A-01 update
+
+### 3.8 設定模型（A-01，方案甲）
+
+兩份檔案：
+
+| 檔案 | 路徑 | Users 權限 | 內容 |
+|------|------|------------|------|
+| `install_config.json` | `C:\ProgramData\Microsoft\Windows\RuntimeHost\` | RX（繼承資料夾） | `server_ip`, `server_port` |
+| `runtime_state.json` | `C:\ProgramData\ScreenshotClient\` | M | 間隔、品質、快取天數 |
+
+- Client 程式只讀 `install_config.json`，永不寫回。
+- Server 推送只更新 `runtime_state.json`。
+- 一般使用者無法修改或刪除 `install_config.json`。
+- 管理員用 `RuntimeHostConfig.exe`（UAC）可改 `server_ip`。
+- GUI 中三個動態參數為唯讀，由 Server 的 `clients\<identity>\config.json` 管理。
+- 不再使用 `locked` 旗標。
+
+優先順序：
+
+```text
+明確 CLI override > Last Known Good / Server 推送 > 內建預設
+```
+
+### 3.9 權限
+
+- 安裝資料夾：Users 只有讀取／執行（`install_config.json` 繼承此權限）
+- `runtime_state.json`：Users 可修改（讓 Client 程式能寫入 Server 推送的值）
+- 工作排程器任務檔：Users 只有讀取，不易停用或刪除
+- 設定程式要求管理員權限（UAC）
