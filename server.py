@@ -35,6 +35,7 @@ DEFAULT_SERVER_CONFIG = {
 }
 SERVER_PROGRAMDATA = Path(r"C:\ProgramData\ScreenshotServer")
 CONFIG_PATH = Path(r"C:\ProgramData\ScreenshotServer\server_config.json")
+CLIENTS_CONFIG_DIR = CONFIG_PATH.parent / "clients"
 session_log_handler: logging.Handler | None = None
 
 app = Flask(__name__)
@@ -177,12 +178,56 @@ def load_server_config(path: Path | None = None, storage_override: Path | None =
 
 
 def client_config_payload() -> dict:
+    """Global defaults used for new clients and as the fallback template."""
     with config_lock:
         return {
             "screenshot_interval": server_config["screenshot_interval"],
             "jpeg_quality": server_config["jpeg_quality"],
             "client_cache_days": server_config["client_cache_days"],
         }
+
+
+def client_config_path(hostname: str, username: str) -> Path:
+    """Per-client config file on the server: clients/<Hostname_Username>/config.json"""
+    hostname = safe_identity_part(hostname, "hostname")
+    username = safe_identity_part(username, "username")
+    return CLIENTS_CONFIG_DIR / f"{hostname}_{username}" / "config.json"
+
+
+def load_or_create_client_config(hostname: str, username: str) -> dict:
+    """Load this client's config, creating it from global defaults on first use."""
+    path = client_config_path(hostname, username)
+    defaults = client_config_payload()
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.error("Per-client config unreadable, using defaults: %s", exc)
+            raw = None
+        if isinstance(raw, dict):
+            return {
+                "screenshot_interval": _positive_int(
+                    raw.get("screenshot_interval"), defaults["screenshot_interval"]
+                ),
+                "jpeg_quality": (
+                    raw["jpeg_quality"]
+                    if isinstance(raw.get("jpeg_quality"), int)
+                    and not isinstance(raw.get("jpeg_quality"), bool)
+                    and 20 <= raw["jpeg_quality"] <= 100
+                    else defaults["jpeg_quality"]
+                ),
+                "client_cache_days": _positive_int(
+                    raw.get("client_cache_days"), defaults["client_cache_days"]
+                ),
+            }
+    # First time this client connects: create from current global defaults
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        save_server_config(path, defaults)
+        logging.info("Created per-client config: %s", path)
+    except OSError as exc:
+        logging.error("Could not create per-client config %s: %s", path, exc)
+    return defaults
 
 
 def retention_state_path(config_path: Path | None = None) -> Path:
@@ -390,8 +435,12 @@ def destination_for(hostname: str, username: str, filename: str) -> Path:
     return destination
 
 
-def success_response():
-    return jsonify(status="ok", config=client_config_payload()), 200
+def success_response(hostname: str = "", username: str = ""):
+    if hostname and username:
+        config = load_or_create_client_config(hostname, username)
+    else:
+        config = client_config_payload()
+    return jsonify(status="ok", config=config), 200
 
 
 def write_all(fd: int, payload: bytes) -> None:
@@ -436,15 +485,17 @@ def api_upload():
     except ValueError as exc:
         return jsonify(status="error", message=str(exc)), 400
 
+    hostname = request.form.get("hostname", "")
+    username = request.form.get("username", "")
     if destination.is_file():
         logging.info("Duplicate upload acknowledged without overwrite: %s", destination)
-        return success_response()
+        return success_response(hostname, username)
 
     try:
         write_exclusive(destination, payload)
     except FileExistsError:
         logging.info("Duplicate upload lost the create race: %s", destination)
-        return success_response()
+        return success_response(hostname, username)
     except Exception as exc:
         logging.exception("Failed to store upload: %s", exc)
         return jsonify(status="error", message="store failed"), 500
@@ -454,7 +505,7 @@ def api_upload():
         return jsonify(status="error", message="store verification failed"), 500
 
     logging.info("Stored %s (%d bytes)", destination, len(payload))
-    return success_response()
+    return success_response(hostname, username)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
