@@ -1,6 +1,6 @@
 [Setup]
 AppName=Windows Screenshot Monitor Client
-AppVersion=0.9
+AppVersion=1.1
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
@@ -8,7 +8,7 @@ DefaultDirName={commonappdata}\Microsoft\Windows\RuntimeHost
 DisableProgramGroupPage=yes
 WizardStyle=modern
 WizardSizePercent=150
-OutputBaseFilename=ScreenshotClientSetup-0.9
+OutputBaseFilename=ScreenshotClientSetup-1.1
 UninstallDisplayIcon={app}\RuntimeHost.exe
 
 [Files]

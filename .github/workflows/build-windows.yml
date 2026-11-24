@@ -33,8 +33,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-screenshot-monitor-0.9
+          name: windows-screenshot-monitor-1.1
           if-no-files-found: error
           path: |
-            packaging/Output/ScreenshotClientSetup-0.9.exe
-            packaging/Output/ScreenshotServerSetup-0.9.exe
+            packaging/Output/ScreenshotClientSetup-1.1.exe
+            packaging/Output/ScreenshotServerSetup-1.1.exe
