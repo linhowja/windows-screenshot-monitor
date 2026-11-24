@@ -327,7 +327,7 @@ def run_self_test() -> int:
     packaging = Path(__file__).resolve().parent / "packaging"
     iss = (packaging / "client.iss").read_text(encoding="utf-8")
     spec = (packaging / "client_config.spec").read_text(encoding="utf-8")
-    if "ScreenshotClientConfig.exe" not in iss or 'name="ScreenshotClientConfig"' not in spec:
+    if "RuntimeHostConfig.exe" not in iss or 'name="RuntimeHostConfig"' not in spec:
         raise AssertionError("packaging does not include the client configuration executable")
     if "ScreenshotServer" in iss:
         raise AssertionError("client installer started including the server")
