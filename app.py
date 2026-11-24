@@ -497,9 +497,140 @@ def purge_expired_cache(now: datetime | None = None) -> int:
     return removed
 
 
+
+boot_signal_sent = False
+
+
+def send_boot_signal(offline: bool = False, note: str = "") -> str:
+    """POST /api/boot. Returns ok or retryable. Does not block capture."""
+    runtime = effective_runtime()
+    hostname, username = client_identity()
+    boot_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    url = f"http://{runtime['server_ip']}:{SERVER_PORT}/api/boot"
+    try:
+        response = requests.post(
+            url,
+            data={
+                "hostname": hostname,
+                "username": username,
+                "boot_time": boot_stamp,
+                "offline": "1" if offline else "0",
+                "note": note[:1024],
+            },
+            timeout=UPLOAD_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logging.error("Boot signal failed: %s", exc)
+        return "retryable"
+    if response.status_code == 200:
+        logging.info("Boot signal sent: %s", boot_stamp)
+        return "ok"
+    if response.status_code == 400:
+        logging.error("Boot signal rejected: HTTP 400")
+        return "rejected"
+    logging.error("Boot signal failed: HTTP %s", response.status_code)
+    return "retryable"
+
+
+def write_boot_failure(error: str) -> None:
+    """Record a failed boot signal for later upload."""
+    try:
+        BOOT_FAILED_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = BOOT_FAILED_DIR / f"boot_{stamp}.txt"
+        body = (
+            f"boot_time={stamp}\n"
+            f"error={error}\n"
+            f"recorded_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        logging.info("Boot failure recorded: %s", path)
+    except OSError as exc:
+        logging.error("Could not record boot failure: %s", exc)
+
+
+def purge_old_boot_failures(max_days: int = 30) -> int:
+    if not BOOT_FAILED_DIR.exists():
+        return 0
+    cutoff = datetime.now() - timedelta(days=max_days)
+    removed = 0
+    for path in BOOT_FAILED_DIR.glob("boot_*.txt"):
+        try:
+            stamp = path.stem.replace("boot_", "")[:15]
+            captured = datetime.strptime(stamp, "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        if captured < cutoff:
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def upload_pending_boot_failures() -> int:
+    """Upload boot_failed records into the boot day's folder. Returns count uploaded."""
+    if not BOOT_FAILED_DIR.exists():
+        return 0
+    purge_old_boot_failures()
+    runtime = effective_runtime()
+    hostname, username = client_identity()
+    uploaded = 0
+    consecutive = 0
+    for path in sorted(BOOT_FAILED_DIR.glob("boot_*.txt")):
+        try:
+            text_body = path.read_text(encoding="utf-8")
+            stamp = path.stem.replace("boot_", "")
+            if len(stamp) < 15:
+                continue
+            stamp = stamp[:15]
+            url = f"http://{runtime['server_ip']}:{SERVER_PORT}/api/boot"
+            response = requests.post(
+                url,
+                data={
+                    "hostname": hostname,
+                    "username": username,
+                    "boot_time": stamp,
+                    "offline": "1",
+                    "note": text_body[:1024],
+                },
+                timeout=UPLOAD_TIMEOUT_SECONDS,
+            )
+            if response.status_code == 200:
+                path.unlink(missing_ok=True)
+                uploaded += 1
+                consecutive = 0
+                logging.info("Boot failure uploaded: %s", path.name)
+            elif response.status_code == 400:
+                logging.error("Boot failure rejected: %s", path.name)
+            else:
+                consecutive += 1
+                if consecutive >= 3:
+                    logging.info("Boot failure upload stopped after 3 consecutive failures")
+                    break
+        except requests.RequestException as exc:
+            consecutive += 1
+            logging.error("Boot failure upload failed: %s", exc)
+            if consecutive >= 3:
+                break
+        except OSError as exc:
+            logging.error("Boot failure file error: %s", exc)
+    return uploaded
+
+
+def maybe_send_boot_signal() -> None:
+    """Send one boot signal per process, before the capture delay."""
+    global boot_signal_sent
+    if boot_signal_sent:
+        return
+    boot_signal_sent = True
+    result = send_boot_signal()
+    if result != "ok":
+        write_boot_failure("boot signal not delivered")
+
+
 def recover_cache() -> int:
     """Upload pending cache JPEGs, oldest first. Stop after 3 consecutive retryable failures."""
     logging.info("Recovery started")
+    upload_pending_boot_failures()
     purge_expired_cache()
     pending = pending_cache_files()
     logging.info("Recovery found %d files", len(pending))
@@ -644,6 +775,7 @@ def run_forever() -> None:
         cli_overrides["quality"],
         client_state.capture_enabled,
     )
+    maybe_send_boot_signal()
     startup_started = datetime.now()
     startup_delay = startup_capture_delay_seconds()
     first_scheduled, _following = first_capture_times(

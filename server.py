@@ -470,6 +470,61 @@ def write_exclusive(destination: Path, payload: bytes) -> None:
         os.close(fd)
 
 
+
+BOOT_TIME_RE = r"^\d{8}_\d{6}$"
+MAX_BOOT_BODY = 4096
+
+
+def boot_destination(hostname: str, username: str, boot_stamp: str, offline: bool) -> Path:
+    hostname = safe_identity_part(hostname, "hostname")
+    username = safe_identity_part(username, "username")
+    if not re.fullmatch(BOOT_TIME_RE, boot_stamp):
+        raise ValueError("invalid boot timestamp")
+    day = boot_stamp[:8]
+    suffix = "_offline" if offline else ""
+    filename = f"boot_{boot_stamp}{suffix}.txt"
+    root = STORAGE_ROOT.resolve()
+    destination = (root / f"{hostname}_{username}" / day / filename).resolve()
+    if os.path.commonpath([str(root), str(destination)]) != str(root):
+        raise ValueError("invalid destination")
+    return destination
+
+
+@app.post("/api/boot")
+def api_boot():
+    if request.content_length and request.content_length > MAX_BOOT_BODY:
+        return jsonify(status="error", message="body too large"), 400
+    hostname = request.form.get("hostname", "")
+    username = request.form.get("username", "")
+    boot_stamp = request.form.get("boot_time", "")
+    offline = request.form.get("offline", "") in {"1", "true", "True"}
+    note = request.form.get("note", "")[:1024]
+    try:
+        destination = boot_destination(hostname, username, boot_stamp, offline)
+    except ValueError as exc:
+        return jsonify(status="error", message=str(exc)), 400
+    body = (
+        f"boot_time={boot_stamp}\n"
+        f"hostname={hostname}\n"
+        f"username={username}\n"
+        f"offline={offline}\n"
+        f"note={note}\n"
+        f"received_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    ).encode("utf-8")
+    if destination.is_file():
+        logging.info("Duplicate boot acknowledged: %s", destination)
+        return jsonify(status="ok"), 200
+    try:
+        write_exclusive(destination, body)
+    except FileExistsError:
+        return jsonify(status="ok"), 200
+    except Exception as exc:
+        logging.exception("Failed to store boot signal: %s", exc)
+        return jsonify(status="error", message="store failed"), 500
+    logging.info("Stored boot signal: %s", destination)
+    return jsonify(status="ok"), 200
+
+
 @app.post("/api/upload")
 def api_upload():
     uploaded = request.files.get("file")
