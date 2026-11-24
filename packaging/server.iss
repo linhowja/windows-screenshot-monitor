@@ -1,12 +1,12 @@
 [Setup]
 AppName=Windows Screenshot Monitor Server
-AppVersion=1.1
+AppVersion=1.2
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 DefaultDirName={autopf}\Windows Screenshot Monitor\Server
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
-OutputBaseFilename=ScreenshotServerSetup-1.1
+OutputBaseFilename=ScreenshotServerSetup-1.2
 WizardStyle=modern
 WizardSizePercent=150
 UninstallDisplayIcon={app}\ScreenshotServer.exe

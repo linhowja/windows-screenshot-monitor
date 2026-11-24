@@ -1,7 +1,7 @@
 # Windows Screenshot Monitor packaging
-# Version 1.1. GitHub Actions workflow .github/workflows/build-windows.yml
+# Version 1.2. GitHub Actions workflow .github/workflows/build-windows.yml
 # builds both installers on Windows. Run it with workflow_dispatch on mvp-v1.
-# Artifacts are ScreenshotClientSetup-1.1.exe and ScreenshotServerSetup-1.1.exe.
+# Artifacts are ScreenshotClientSetup-1.2.exe and ScreenshotServerSetup-1.2.exe.
 #
 # Build on Windows 64-bit from the repository root:
 #   py -3 -m pip install -r requirements.txt pyinstaller
